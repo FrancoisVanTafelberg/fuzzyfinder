@@ -242,6 +242,8 @@ switch ($Mode) {
   # --- Build fzf arguments ---
   $fzfArgs = @(
     '--ansi',
+    '--wrap',                         # wrap long lines in the list (portable; avoids --truncate version issues)
+    '--ellipsis=..',           	      # marker for wrapped/truncated display in list
     '--delimiter', ':',               # split "file:line:text"
     '--preview', $preview,            # use our preview script
     '--preview-window', 'up:60%:wrap',
