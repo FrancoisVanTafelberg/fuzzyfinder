@@ -290,6 +290,21 @@ results_draw :: proc(r: rl.Rectangle) {
 			fill(rr, COL_PANEL_HI)
 		}
 		item := g.search.top.items[i].item
+		tx := r.x + f.pad + f.cw
+		// Which part of the path the mouse is over - a folder, the name, the
+		// extension - picks what the right-click menu offers to exclude.
+		hover: Path_Hover
+		if hovered(rr) {
+			hover = path_part_at(result_rel(item), tx, g.ui.mouse.x)
+			if hover.part != .None {
+				rel := result_rel(item)
+				hx := tx + f32(text_cols(rel[:hover.start])) * f.cw
+				hw := f32(text_cols(rel[hover.start:hover.end])) * f.cw
+				if hover.part == .Folder do hw += f.cw // and its '/'
+				fill({hx, y, hw, f.lh}, COL_BUTTON_HOT)
+				fill({hx, y + f.lh - 2, hw, 2}, COL_ACCENT)
+			}
+		}
 
 		if ui_take_click(rr) {
 			// A second click on the same row soon after is a double-click.
@@ -301,10 +316,10 @@ results_draw :: proc(r: rl.Rectangle) {
 		}
 		if ui_take_right(rr) {
 			g.sel = i
-			context_menu_open(g.ui.mouse, i)
+			context_menu_open(g.ui.mouse, i, hover)
 		}
 
-		result_row_draw(item, r.x + f.pad + f.cw, y, cols)
+		result_row_draw(item, tx, y, cols)
 	}
 	// Where this page sits in the whole list.
 	if n > rows {
@@ -327,6 +342,77 @@ results_rows :: proc() -> int {
 
 results_first :: proc(rows: int) -> int {
 	return (max(0, g.sel) / rows) * rows
+}
+
+// The path of a result's file.
+result_rel :: proc(item: u32) -> string {
+	switch g.search.mode {
+	case .Files:
+		return g.idx.files[item].rel
+	case .Content:
+		return g.idx.files[g.idx.lines[item].file].rel
+	}
+	return ""
+}
+
+Path_Part :: enum u8 {
+	None,
+	Folder, // rel[:end] is that folder ("data/unit_models")
+	Name, // the file's name, without its extension
+	Ext, // ".bak"
+}
+
+// What part of a path drawn at x0 is under screen x `mx`. start/end are the
+// byte span of the part in `rel`; for a folder, `end` is where its '/' is, so
+// rel[:end] is the folder's path from the root.
+Path_Hover :: struct {
+	part:       Path_Part,
+	start, end: int,
+}
+
+path_part_at :: proc(rel: string, x0, mx: f32) -> Path_Hover {
+	if mx < x0 do return {}
+	want := int((mx - x0) / g.font.cw)
+	// The byte the mouse column falls on.
+	col := 0
+	at := -1
+	for _, i in rel {
+		if col == want {
+			at = i
+			break
+		}
+		col += 1
+	}
+	if at < 0 do return {}
+
+	// The part of the path it belongs to: from the '/' before it to the '/'
+	// after it. A '/' itself belongs to the folder it ends.
+	start := 0
+	for i := at - 1; i >= 0; i -= 1 do if rel[i] == '/' {
+		start = i + 1
+		break
+	}
+	if rel[at] == '/' {
+		// on the slash: the folder ending here
+		s := 0
+		for i := at - 1; i >= 0; i -= 1 do if rel[i] == '/' {
+			s = i + 1
+			break
+		}
+		return {.Folder, s, at}
+	}
+	end := len(rel)
+	for i in at ..< len(rel) do if rel[i] == '/' {
+		end = i
+		break
+	}
+	if end < len(rel) do return {.Folder, start, end}
+
+	// The file name: the extension is from its last '.' (not a leading one).
+	name := rel[start:]
+	dot := strings.last_index_byte(name, '.')
+	if dot > 0 && dot < len(name) - 1 && at >= start + dot do return {.Ext, start + dot, len(rel)}
+	return {.Name, start, dot > 0 ? start + dot : len(rel)}
 }
 
 // One result: path, line number, text - the matched characters marked.

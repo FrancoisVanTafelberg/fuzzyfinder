@@ -4,3 +4,4 @@ build/
 *.dll
 *.so
 .archived
+.temp

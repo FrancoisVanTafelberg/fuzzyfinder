@@ -24,37 +24,61 @@ Ctx_Action :: enum u8 {
 }
 
 Context_Menu :: struct {
-	open: bool,
-	pos:  rl.Vector2,
-	file: int,
-	line: int,
-	gen:  int,
+	open:    bool,
+	pos:     rl.Vector2,
+	file:    int,
+	line:    int,
+	gen:     int,
+	// Which folder the "Exclude folder" entries are about: the one under the
+	// mouse when the result was right-clicked, else the file's own folder.
+	// A path from the root without slashes at either end ("data/unit_models").
+	// Kept in a buffer rather than a string so the menu owns nothing.
+	dir:     [1024]u8,
+	dir_len: int,
+	// Right-clicked on a folder, or on the extension: those entries are the
+	// point, and are drawn brighter.
+	on_dir:  bool,
+	on_type: bool,
 }
 
-context_menu_open :: proc(at: rl.Vector2, row: int) {
+// `hover` is what the mouse was over in the result's path (path_part_at).
+context_menu_open :: proc(at: rl.Vector2, row: int, hover: Path_Hover = {}) {
 	g.sel = row
 	file, line, ok := selected_target()
 	if !ok do return
 	g.ctx = {
-		open = true,
-		pos  = at,
-		file = file,
-		line = line,
-		gen  = g.idx.generation,
+		open    = true,
+		pos     = at,
+		file    = file,
+		line    = line,
+		gen     = g.idx.generation,
+		on_dir  = hover.part == .Folder,
+		on_type = hover.part == .Ext,
 	}
+	rel := g.idx.files[file].rel
+	dir := ""
+	if hover.part == .Folder && hover.end <= len(rel) {
+		dir = rel[:hover.end]
+	} else if i := strings.last_index_byte(rel, '/'); i > 0 {
+		dir = rel[:i]
+	}
+	g.ctx.dir_len = copy(g.ctx.dir[:], dir)
+}
+
+ctx_dir :: proc() -> string {
+	return string(g.ctx.dir[:g.ctx.dir_len])
 }
 
 // What the folder and type entries would be for this file. The folder for
-// "all searches" is the parent's NAME ("rlu/", matching any folder so named);
-// for "this search" it is the parent's PATH from the root ("/source/rlu/").
+// "all searches" is the chosen folder's NAME ("rlu/", matching any folder so
+// named); for "this search" it is its PATH from the root ("/source/rlu/").
 @(private = "file")
 ctx_targets :: proc(rel: string) -> (name_entry, path_entry, type_entry: string) {
-	if i := strings.last_index_byte(rel, '/'); i > 0 {
-		parent := rel[:i]
-		name := parent
-		if j := strings.last_index_byte(parent, '/'); j >= 0 do name = parent[j + 1:]
+	if dir := ctx_dir(); dir != "" {
+		name := dir
+		if j := strings.last_index_byte(dir, '/'); j >= 0 do name = dir[j + 1:]
 		name_entry = fmt.tprintf("%s/", name)
-		path_entry = fmt.tprintf("/%s/", parent)
+		path_entry = fmt.tprintf("/%s/", dir)
 	}
 	buf: [64]u8
 	if e := ignore.ext_of(rel, buf[:]); e != "" do type_entry = strings.clone(e, context.temp_allocator)
@@ -142,7 +166,11 @@ context_menu_draw :: proc() {
 	outline(box, COL_EDGE)
 	for it in items {
 		if it.enabled && hovered(it.rect) do fill(it.rect, COL_SEL)
-		draw_text(it.label, it.rect.x + 2 * f.cw, it.rect.y, it.enabled ? COL_TEXT : COL_FAINT)
+		col := it.enabled ? COL_TEXT : COL_FAINT
+		aimed := (g.ctx.on_dir && (it.action == .Folder_All || it.action == .Folder_Session)) ||
+			(g.ctx.on_type && (it.action == .Type_All || it.action == .Type_Session))
+		if it.enabled && aimed do col = COL_ACCENT
+		draw_text(it.label, it.rect.x + 2 * f.cw, it.rect.y, col)
 		if it.action == .Folder_All do fill({box.x + f.pad, it.rect.y - f.pad / 2 - 1, box.width - 2 * f.pad, 1}, COL_RULE)
 	}
 }
