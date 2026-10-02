@@ -22,26 +22,31 @@ import rl "vendor:raylib"
 @(rodata)
 FONT_TTF := #load("fonts/JetBrainsMono-Regular.ttf")
 
-COL_BG :: rl.Color{22, 24, 30, 255}
-COL_PANEL :: rl.Color{29, 32, 41, 255}
-COL_PANEL_HI :: rl.Color{38, 42, 54, 255}
-COL_GUTTER :: rl.Color{26, 28, 36, 255}
-COL_EDGE :: rl.Color{56, 61, 78, 255}
-COL_TEXT :: rl.Color{216, 220, 228, 255}
-COL_DIM :: rl.Color{132, 138, 158, 255}
-COL_FAINT :: rl.Color{84, 90, 108, 255}
-COL_ACCENT :: rl.Color{255, 196, 84, 255}
-COL_MATCH :: rl.Color{255, 160, 64, 255}
-COL_PATH :: rl.Color{122, 176, 236, 255}
-COL_NUM :: rl.Color{126, 196, 140, 255}
-COL_SEL :: rl.Color{48, 57, 84, 255}
-COL_HL_LINE :: rl.Color{66, 56, 30, 255}
-COL_BUTTON :: rl.Color{44, 49, 66, 255}
-COL_BUTTON_HOT :: rl.Color{62, 70, 96, 255}
-COL_BUTTON_ON :: rl.Color{92, 76, 36, 255}
-COL_GOOD :: rl.Color{120, 214, 140, 255}
-COL_BAD :: rl.Color{246, 102, 102, 255}
-COL_SCRIM :: rl.Color{0, 0, 0, 150}
+// The palette: near-black, with green for everything that is not text.
+// Taken from Animal Kingdoms' menus (.temp/colour_palette.png) - a black
+// ground, dark moss fills, sage outlines, a brighter green for whatever is
+// selected, and text in a warm off-white that leans the same way.
+COL_BG :: rl.Color{9, 10, 10, 255} // the ground
+COL_PANEL :: rl.Color{13, 15, 14, 255} // panes that sit on it
+COL_PANEL_HI :: rl.Color{22, 27, 21, 255} // hover, the context menu
+COL_GUTTER :: rl.Color{11, 13, 12, 255} // line numbers, wells, tracks
+COL_RULE :: rl.Color{38, 45, 35, 255} // the 1px lines between panes
+COL_EDGE :: rl.Color{120, 138, 104, 255} // sage: outlines of boxes and buttons
+COL_TEXT :: rl.Color{226, 232, 214, 255}
+COL_DIM :: rl.Color{150, 160, 145, 255}
+COL_FAINT :: rl.Color{88, 96, 84, 255}
+COL_ACCENT :: rl.Color{168, 196, 128, 255} // selected, focused
+COL_MATCH :: rl.Color{214, 244, 120, 255} // the matched characters: the brightest thing on screen
+COL_PATH :: rl.Color{132, 170, 112, 255}
+COL_NUM :: rl.Color{104, 128, 92, 255}
+COL_SEL :: rl.Color{30, 37, 28, 255} // the selected result's row: the button fill
+COL_HL_LINE :: rl.Color{30, 40, 24, 255} // the matched line in the viewer
+COL_BUTTON :: rl.Color{30, 37, 28, 255}
+COL_BUTTON_HOT :: rl.Color{42, 52, 38, 255}
+COL_BUTTON_ON :: rl.Color{36, 46, 30, 255}
+COL_GOOD :: rl.Color{168, 196, 128, 255}
+COL_BAD :: rl.Color{226, 112, 96, 255}
+COL_SCRIM :: rl.Color{0, 0, 0, 170}
 
 TAB_WIDTH :: 4
 
@@ -264,7 +269,7 @@ button :: proc(r: rl.Rectangle, label: string, on := false, enabled := true) -> 
 	if !enabled do bg = COL_PANEL
 	fill(r, bg)
 	outline(r, on ? COL_ACCENT : COL_EDGE)
-	text_centered(label, r, enabled ? (on ? COL_ACCENT : COL_TEXT) : COL_FAINT)
+	text_centered(label, r, enabled ? COL_TEXT : COL_FAINT)
 	return enabled && ui_take_click(r)
 }
 

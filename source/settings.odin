@@ -36,6 +36,7 @@ Settings :: struct {
 	results:          i32, // how many result rows
 	max_fps:          i32,
 	max_file_kb:      i32,
+	show_metrics:     bool, // the performance panel (F3)
 	// What Enter runs. "" asks the system for the file's default app and, if
 	// that is an editor fff knows, passes it the line. Otherwise a command
 	// with {file} and {line} in it, e.g. "code -g {file}:{line}".
@@ -63,6 +64,7 @@ settings_defaults :: proc() -> (s: Settings) {
 		results      = 10,
 		max_fps      = 60,
 		max_file_kb  = 4096,
+		show_metrics = true,
 	}
 	// Version control internals: never what anyone is looking for, and a
 	// .git folder can hold more bytes than the tree it sits in. Shown in the
@@ -134,6 +136,9 @@ settings_load :: proc(s: ^Settings, path: string) -> (first_run: bool) {
 	get_int(obj, "max_fps", &s.max_fps)
 	get_int(obj, "max_file_kb", &s.max_file_kb)
 	if ed, ok := get_str(obj, "editor"); ok do s.editor = strings.clone(ed)
+	if v, ok := obj["show_metrics"]; ok {
+		if b, is := v.(json.Boolean); is do s.show_metrics = bool(b)
+	}
 
 	if arr, ok := get_list(obj, "open_with_recent"); ok {
 		for e in arr do if str, is := e.(json.String); is && len(str) > 0 && len(s.open_with_recent) < OPEN_WITH_RECENT_MAX {
@@ -203,6 +208,7 @@ settings_save :: proc(s: ^Settings, path: string) {
 	fmt.sbprintln(&b, "// view")
 	w(&b, "font_size", fmt.tprint(s.font_size))
 	w(&b, "results", fmt.tprint(s.results))
+	w(&b, "show_metrics", s.show_metrics ? "true" : "false")
 	fmt.sbprintln(&b, "")
 	fmt.sbprintln(&b, "// search - files larger than this (in KB) are listed but not read")
 	w(&b, "max_file_kb", fmt.tprint(s.max_file_kb))

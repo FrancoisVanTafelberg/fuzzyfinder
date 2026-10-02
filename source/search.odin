@@ -109,7 +109,7 @@ item_hidden :: proc(idx: ^Index, mode: Mode, item: u32) -> bool {
 
 // Bring the search up to date with the query, the mode and the index, using
 // at most `budget`. Returns true if the results changed.
-search_step :: proc(s: ^Search, idx: ^Index, query: string, mode: Mode, k: int, rules_ver: int, budget: time.Duration) -> bool {
+search_step :: proc(s: ^Search, idx: ^Index, query: string, mode: Mode, k: int, rules_ver: int, budget: time.Duration, stats: ^Work_Stats = nil) -> bool {
 	if string(s.query[:]) != query || s.mode != mode || s.k != k || s.gen != idx.generation || s.rules_ver != rules_ver {
 		clear(&s.query)
 		append(&s.query, query)
@@ -152,7 +152,12 @@ search_step :: proc(s: ^Search, idx: ^Index, query: string, mode: Mode, k: int, 
 		budget  = budget,
 	}
 	n := min(worker_count(), max(1, (total - s.done) / SEARCH_CHUNK))
-	parallel(n, &job, search_worker)
+	search_start := time.tick_now()
+	parallel(n, &job, search_worker, stats != nil ? &stats.busy : nil)
+	if stats != nil {
+		stats.search += time.tick_since(search_start)
+		stats.slots = max(stats.slots, n)
+	}
 
 	claimed := sync.atomic_load(&job.next_chunk)
 	s.done = min(total, s.done + claimed * SEARCH_CHUNK)

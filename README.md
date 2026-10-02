@@ -48,8 +48,27 @@ The layout uses the whole window at whatever size it is. There is no fixed canva
 | Ctrl+V, Ctrl+U, Ctrl+Backspace | paste, clear the query, delete a word |
 | Right-click a result | open in system default, open in…, exclude its folder or file type |
 | Double-click a result | opens it, like Enter |
+| F3 | the performance panel, above the key legend: CPU, memory, disk, index rate, where each frame went, and how busy each thread is |
 | Esc | the menu: display mode, resolution, font size, result rows, FPS cap, quit |
 | F11 | windowed / borderless |
+
+## The performance panel (F3)
+
+The panel sits above the key legend. It is on by default, and F3 or `show_metrics` in settings.txt turns it off. It updates twice a second:
+
+| Row | Shows |
+|---|---|
+| fps | frames per second and frame time |
+| cpu | fff's share of the whole machine and the machine's total; a history bar per half second |
+| mem | fff's resident memory, and how much of it is the index (file text plus line tables) |
+| disk | bytes read per second, as the OS counts it and as fff counts it |
+| index | files read and folders listed per second |
+| main thread | one stacked bar per frame: walk, read, lines, search, draw, and wait (presenting and waiting for vsync) |
+| threads | one column per core fff uses, showing the share of the last half second it spent working. "main" is the main thread taking its share. |
+
+While the panel is showing and fff is idle, it redraws 20 times a second instead of sleeping, so the readout stays live. Turn it off for a fully idle fff.
+
+`.design/performance_improvements.md` explains what the numbers mean for speed, and what to change.
 
 ## Searching
 
@@ -159,16 +178,18 @@ source/
   launch*.odin        opening files: shared, Windows, Linux
   display.odin        window modes and resolutions
   settings.odin       settings.txt
+  perf*.odin          the F3 performance panel; the OS counters per platform
   ui.odin             palette, font, widgets
   fuzzy/              the matcher (pure, tested)
   ignore/             the ignore rules (pure, tested)
   fonts/              JetBrains Mono, SIL Open Font License (OFL.txt)
 main_release/         entry point for the release exe
+.design/             design notes, such as performance_improvements.md
 main_hot_reload/      the dev host
 tools/bench/          headless timing
 ```
 
-The old PowerShell scripts (`ff.cmd`, `ffj.cmd`, `fuzzyfinder.ps1`) are still in the repo for reference. fff doesn't use them.
+The old PowerShell `ff` (`ff.cmd`, `ffj.cmd`, `fuzzyfinder.ps1` and its README) is kept in `.archived/` for reference. fff doesn't use it.
 
 ## Licence
 

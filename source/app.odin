@@ -59,6 +59,9 @@ App :: struct {
 	status_time:   f64,
 	status_bad:    bool,
 
+	perf:          Perf, // the metrics panel (perf.odin)
+	idle_fps:      bool, // running at the idle rate for the metrics panel
+
 	ui:            Ui_State,
 	quit:          bool,
 	first_run:     bool,
@@ -83,6 +86,7 @@ game_init :: proc() {
 	font_load(&g.font, g.settings.font_size)
 	g.view.file = -1
 	g.mode = .Content
+	perf_init(&g.perf)
 	reindex()
 }
 
@@ -90,6 +94,10 @@ game_init :: proc() {
 game_update :: proc() -> bool {
 	ui_begin()
 
+	if rl.IsKeyPressed(.F3) {
+		g.settings.show_metrics = !g.settings.show_metrics
+		settings_save(&g.settings, g.settings_path)
+	}
 	if rl.IsKeyPressed(.F11) {
 		g.settings.display_mode = current_mode() == .Windowed ? .Borderless : .Windowed
 		display_apply(&g.settings)
@@ -117,14 +125,15 @@ game_update :: proc() -> bool {
 	lists := rule_lists()
 	busy := false
 	if !index_done(&g.idx) {
-		index_step(&g.idx, g.root, lists[:], 6 * time.Millisecond)
+		index_step(&g.idx, g.root, lists[:], 6 * time.Millisecond, &g.perf.acc)
 		busy = true
 	}
-	search_step(&g.search, &g.idx, string(g.query[:]), g.mode, int(g.settings.results), g.rules_ver, 10 * time.Millisecond)
+	search_step(&g.search, &g.idx, string(g.query[:]), g.mode, int(g.settings.results), g.rules_ver, 10 * time.Millisecond, &g.perf.acc)
 	if search_busy(&g.search, &g.idx) do busy = true
 	results_sync()
 
 	// --- draw -------------------------------------------------------------
+	draw_start := time.tick_now()
 	rl.BeginDrawing()
 	rl.ClearBackground(COL_BG)
 	modal := g.menu.open || g.prompt.open
@@ -137,17 +146,34 @@ game_update :: proc() -> bool {
 	if g.ctx.open do context_menu_draw()
 	if g.prompt.open do prompt_draw()
 	if g.menu.open do menu_draw()
-	rl.EndDrawing()
+	wait_start := time.tick_now()
+	g.perf.draw += time.tick_diff(draw_start, wait_start)
+	rl.EndDrawing() // presents, then waits out the rest of the frame
+	g.perf.wait += time.tick_since(wait_start)
 
 	settings_capture_window(&g.settings)
+	perf_frame_end(&g.perf, &g.idx)
 	free_all(context.temp_allocator)
 
 	// Nothing moving? Then sleep until there is an input event, rather than
 	// redrawing the same picture 60 times a second. A status message that is
 	// still fading counts as moving.
+	//
+	// With the metrics panel showing, an idle fff keeps ticking - the panel
+	// is a live readout - but at a few frames a second, so the readout does
+	// not mostly measure itself.
 	animating := rl.GetTime() - g.status_time < STATUS_SECONDS
-	if busy || animating do rl.DisableEventWaiting()
-	else do rl.EnableEventWaiting()
+	idle := !busy && !animating
+	if idle && g.settings.show_metrics {
+		rl.DisableEventWaiting()
+		if !g.idle_fps do rl.SetTargetFPS(PERF_IDLE_FPS)
+		g.idle_fps = true
+	} else {
+		if g.idle_fps do rl.SetTargetFPS(g.settings.max_fps)
+		g.idle_fps = false
+		if idle do rl.EnableEventWaiting()
+		else do rl.DisableEventWaiting()
+	}
 
 	return !rl.WindowShouldClose() && !g.quit
 }

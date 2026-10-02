@@ -265,7 +265,7 @@ fuzzy_positions :: 256
 results_draw :: proc(r: rl.Rectangle) {
 	f := &g.font
 	fill(r, COL_PANEL)
-	fill({r.x, r.y, r.width, 1}, COL_EDGE)
+	fill({r.x, r.y, r.width, 1}, COL_RULE)
 	rows := max(1, int((r.height - 2 * f.pad) / f.lh))
 	n := g.search.top.n
 
@@ -339,7 +339,7 @@ result_row_draw :: proc(item: u32, x, y: f32, cols: int) {
 search_bar_draw :: proc(r: rl.Rectangle) {
 	f := &g.font
 	fill(r, COL_GUTTER)
-	fill({r.x, r.y, r.width, 1}, COL_EDGE)
+	fill({r.x, r.y, r.width, 1}, COL_RULE)
 	if ui_take_click(r) do g.focus = .Search
 	focused := g.focus == .Search
 	y := r.y + f.pad
@@ -391,7 +391,7 @@ search_bar_draw :: proc(r: rl.Rectangle) {
 panel_draw :: proc(r: rl.Rectangle) {
 	f := &g.font
 	fill(r, COL_PANEL)
-	fill({r.x, r.y, 1, r.height}, COL_EDGE)
+	fill({r.x, r.y, 1, r.height}, COL_RULE)
 	x := r.x + f.pad
 	w := r.width - 2 * f.pad
 	cols := int(w / f.cw)
@@ -405,12 +405,24 @@ panel_draw :: proc(r: rl.Rectangle) {
 		{"E / D", "viewer half page"},
 		{"Alt+C/F", "content / files"},
 		{"Right-click", "more"},
+		{"F3", "metrics"},
 		{"Esc", "menu"},
 	}
 	lh := f.lh
 	legend_h := f32(len(legend)) * lh + 2 * f.pad
 	legend_y := r.y + r.height - legend_h
-	list := rl.Rectangle{r.x, r.y, r.width, legend_y - r.y}
+	// The metrics sit just above the legend - when there is room for them
+	// and still a few rows of the ignore lists above.
+	metrics_y := legend_y
+	if g.settings.show_metrics {
+		mh := f32(perf_panel_lines()) * lh + 2 * f.pad
+		if legend_y - mh - r.y >= 3 * lh {
+			metrics_y = legend_y - mh
+			fill({r.x, metrics_y, r.width, 1}, COL_RULE)
+			perf_panel_draw({r.x, metrics_y, r.width, mh})
+		}
+	}
+	list := rl.Rectangle{r.x, r.y, r.width, metrics_y - r.y}
 
 	if wv := ui_take_wheel(list); wv != 0 do g.panel_scroll -= wv * lh * 3
 	rl.BeginScissorMode(i32(list.x), i32(list.y), i32(list.width), i32(list.height))
@@ -453,7 +465,7 @@ panel_draw :: proc(r: rl.Rectangle) {
 	rl.EndScissorMode()
 	g.panel_scroll = clamp(g.panel_scroll, 0, max(0, content_h - list.height))
 
-	fill({r.x, legend_y, r.width, 1}, COL_EDGE)
+	fill({r.x, legend_y, r.width, 1}, COL_RULE)
 	ly := legend_y + f.pad
 	kw := 0
 	for k in legend do kw = max(kw, len(k[0]))

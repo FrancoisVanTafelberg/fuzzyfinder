@@ -143,7 +143,7 @@ context_menu_draw :: proc() {
 	for it in items {
 		if it.enabled && hovered(it.rect) do fill(it.rect, COL_SEL)
 		draw_text(it.label, it.rect.x + 2 * f.cw, it.rect.y, it.enabled ? COL_TEXT : COL_FAINT)
-		if it.action == .Folder_All do fill({box.x + f.pad, it.rect.y - f.pad / 2 - 1, box.width - 2 * f.pad, 1}, COL_EDGE)
+		if it.action == .Folder_All do fill({box.x + f.pad, it.rect.y - f.pad / 2 - 1, box.width - 2 * f.pad, 1}, COL_RULE)
 	}
 }
 

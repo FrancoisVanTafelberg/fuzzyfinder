@@ -111,9 +111,11 @@ line_text :: proc(f: ^File, line: int) -> string {
 }
 
 // Do up to `budget` of indexing work. Returns true if anything changed.
-index_step :: proc(idx: ^Index, root: string, lists: []^ignore.Rules, budget: time.Duration) -> bool {
+// `stats`, if given, is added to (the metrics panel; see perf.odin).
+index_step :: proc(idx: ^Index, root: string, lists: []^ignore.Rules, budget: time.Duration, stats: ^Work_Stats = nil) -> bool {
 	start := time.tick_now()
 	changed := false
+	dirs_before := idx.dir_next
 
 	// --- walk: a few folders at a time ---------------------------------
 	walk_budget := budget / 3
@@ -122,6 +124,10 @@ index_step :: proc(idx: ^Index, root: string, lists: []^ignore.Rules, budget: ti
 		idx.dir_next += 1
 		walk_one(idx, root, rel, lists)
 		changed = true
+	}
+	if stats != nil {
+		stats.walk += time.tick_since(start)
+		stats.dirs += i64(idx.dir_next - dirs_before)
 	}
 
 	// --- read: the files found so far, over every core -----------------
@@ -137,10 +143,16 @@ index_step :: proc(idx: ^Index, root: string, lists: []^ignore.Rules, budget: ti
 			budget   = left,
 		}
 		n := min(worker_count(), max(1, (job.end - job.next) / 4))
-		parallel(n, &job, load_worker)
+		read_start := time.tick_now()
+		parallel(n, &job, load_worker, stats != nil ? &stats.busy : nil)
+		lines_start := time.tick_now()
 		done := min(sync.atomic_load(&job.next), job.end)
 		for i in idx.loaded ..< done {
 			f := &idx.files[i]
+			if stats != nil && (f.state == .Text || f.state == .Binary) {
+				stats.files += 1
+				stats.bytes += f.size
+			}
 			if f.state != .Text do continue
 			idx.text_bytes += i64(len(f.data))
 			for l in 0 ..< len(f.lines) {
@@ -149,6 +161,11 @@ index_step :: proc(idx: ^Index, root: string, lists: []^ignore.Rules, budget: ti
 		}
 		if done > idx.loaded do changed = true
 		idx.loaded = done
+		if stats != nil {
+			stats.read += time.tick_diff(read_start, lines_start)
+			stats.lines += time.tick_since(lines_start)
+			stats.slots = max(stats.slots, n)
+		}
 	}
 
 	// The walk queue's strings are no longer needed once it is finished.
