@@ -45,7 +45,6 @@ App :: struct {
 	sel:           int, // row in the results
 	sel_stamp:     int, // search.stamp when sel was last validated
 	view:          Viewer,
-	res_first:     int, // first result row shown, when they do not all fit
 	click_time:    f64, // for double-clicks on a result
 	click_row:     int,
 	panel_scroll:  f32,
@@ -128,7 +127,7 @@ game_update :: proc() -> bool {
 		index_step(&g.idx, g.root, lists[:], 6 * time.Millisecond, &g.perf.acc)
 		busy = true
 	}
-	search_step(&g.search, &g.idx, string(g.query[:]), g.mode, int(g.settings.results), g.rules_ver, 10 * time.Millisecond, &g.perf.acc)
+	search_step(&g.search, &g.idx, string(g.query[:]), g.mode, int(g.settings.max_results), g.rules_ver, 10 * time.Millisecond, &g.perf.acc)
 	if search_busy(&g.search, &g.idx) do busy = true
 	results_sync()
 

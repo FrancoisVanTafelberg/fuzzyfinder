@@ -94,13 +94,26 @@ lone_operators_are_ignored :: proc(t: ^testing.T) {
 @(test)
 top_keeps_the_best_k :: proc(t: ^testing.T) {
 	top: Top
-	top_init(&top, 3)
+	buf: [3]Ranked
+	top_init(&top, buf[:])
 	for s, i in ([]i32{5, 1, 9, 7, 3, 9}) do top_push(&top, {score = s, length = 10, item = u32(i)})
 	testing.expect_value(t, top.n, 3)
 	testing.expect_value(t, top.items[0].score, 9)
 	testing.expect_value(t, top.items[0].item, 2) // equal scores: earlier item first
 	testing.expect_value(t, top.items[1].item, 5)
 	testing.expect_value(t, top.items[2].score, 7)
+}
+
+@(test)
+top_stays_sorted_when_deep :: proc(t: ^testing.T) {
+	buf: [500]Ranked
+	top: Top
+	top_init(&top, buf[:])
+	// A scrambled run of scores, more of them than fit.
+	for i in 0 ..< 5000 do top_push(&top, {score = i32((i * 7919) % 3001), length = 1, item = u32(i)})
+	testing.expect_value(t, top.n, 500)
+	for i in 1 ..< top.n do testing.expect(t, !better(top.items[i], top.items[i - 1]), "best first")
+	testing.expect_value(t, top.items[0].score, 3000)
 }
 
 @(test)

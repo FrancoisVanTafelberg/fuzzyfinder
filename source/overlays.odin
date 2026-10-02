@@ -277,8 +277,8 @@ menu_draw :: proc() {
 	y += row
 
 	// --- result rows
-	draw_text("Results", x, y + f.pad / 4, COL_DIM)
-	if step := stepper({cx, y, cw, bh}, fmt.tprintf("%v rows", s.results)); step != 0 {
+	draw_text("Rows", x, y + f.pad / 4, COL_DIM)
+	if step := stepper({cx, y, cw, bh}, fmt.tprintf("%v per page", s.results)); step != 0 {
 		s.results = clamp(s.results + i32(step), RESULTS_MIN, RESULTS_MAX)
 	}
 	y += row

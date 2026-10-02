@@ -33,7 +33,8 @@ Settings :: struct {
 	window_x:         i32,
 	window_y:         i32,
 	font_size:        i32,
-	results:          i32, // how many result rows
+	results:          i32, // how many result rows are shown at once (a page)
+	max_results:      i32, // how many results are kept to page through
 	max_fps:          i32,
 	max_file_kb:      i32,
 	show_metrics:     bool, // the performance panel (F3)
@@ -51,6 +52,8 @@ FONT_MIN :: 10
 FONT_MAX :: 48
 RESULTS_MIN :: 3
 RESULTS_MAX :: 50
+MAX_RESULTS_MIN :: 10
+MAX_RESULTS_MAX :: 100_000
 OPEN_WITH_RECENT_MAX :: 6
 
 settings_defaults :: proc() -> (s: Settings) {
@@ -62,6 +65,7 @@ settings_defaults :: proc() -> (s: Settings) {
 		window_y     = WINDOW_UNPLACED,
 		font_size    = 18,
 		results      = 10,
+		max_results  = 1000,
 		max_fps      = 60,
 		max_file_kb  = 4096,
 		show_metrics = true,
@@ -133,6 +137,7 @@ settings_load :: proc(s: ^Settings, path: string) -> (first_run: bool) {
 	get_int(obj, "window_y", &s.window_y)
 	get_int(obj, "font_size", &s.font_size)
 	get_int(obj, "results", &s.results)
+	get_int(obj, "max_results", &s.max_results)
 	get_int(obj, "max_fps", &s.max_fps)
 	get_int(obj, "max_file_kb", &s.max_file_kb)
 	if ed, ok := get_str(obj, "editor"); ok do s.editor = strings.clone(ed)
@@ -162,6 +167,7 @@ settings_load :: proc(s: ^Settings, path: string) -> (first_run: bool) {
 	s.window_h = max(s.window_h, WINDOW_MIN_H)
 	s.font_size = clamp(s.font_size, FONT_MIN, FONT_MAX)
 	s.results = clamp(s.results, RESULTS_MIN, RESULTS_MAX)
+	s.max_results = clamp(s.max_results, MAX_RESULTS_MIN, MAX_RESULTS_MAX)
 	s.max_fps = clamp(s.max_fps, 0, 1000)
 	s.max_file_kb = clamp(s.max_file_kb, 16, 1024 * 1024)
 	return
@@ -208,6 +214,7 @@ settings_save :: proc(s: ^Settings, path: string) {
 	fmt.sbprintln(&b, "// view")
 	w(&b, "font_size", fmt.tprint(s.font_size))
 	w(&b, "results", fmt.tprint(s.results))
+	w(&b, "max_results", fmt.tprint(s.max_results))
 	w(&b, "show_metrics", s.show_metrics ? "true" : "false")
 	fmt.sbprintln(&b, "")
 	fmt.sbprintln(&b, "// search - files larger than this (in KB) are listed but not read")

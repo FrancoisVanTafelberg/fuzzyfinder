@@ -34,7 +34,7 @@ main :: proc() {
 			t1 := time.tick_now()
 			fr := 0
 			for {
-				fff.search_step(&s, &idx, q, mode, 10, 0, 1000 * time.Millisecond)
+				fff.search_step(&s, &idx, q, mode, 1000, 0, 1000 * time.Millisecond)
 				fr += 1
 				if !fff.search_busy(&s, &idx) do break
 			}

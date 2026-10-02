@@ -37,7 +37,7 @@ The layout uses the whole window at whatever size it is. There is no fixed canva
 | Key | Does |
 |---|---|
 | typing | edits the query (when the search line has focus) |
-| Up / Down | moves through the results; the viewer follows |
+| Up / Down, mouse wheel | moves through the results; the viewer follows. The list is paged: past the 10th result it shows 11–20, and so on. |
 | Enter | opens the selected file in its default app, **at the line** for known editors |
 | Tab | switches focus between the search line and the viewer (the focused one has an amber outline) |
 | W / S | viewer: one line up / down (viewer focused) |
@@ -139,7 +139,8 @@ Settings are stored in `%APPDATA%\fff\settings.txt` on Windows and `~/.config/ff
 display_mode     = "windowed"      // windowed | borderless | fullscreen
 window_w         = 1600            // the window remembers its size and place
 font_size        = 18
-results          = 10              // result rows
+results          = 10              // result rows per page
+max_results      = 1000            // how many results are kept to page through
 max_fps          = 60
 max_file_kb      = 4096            // larger files are listed, not read
 editor           = ""              // "" = the system default app, see above

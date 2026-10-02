@@ -269,17 +269,17 @@ results_draw :: proc(r: rl.Rectangle) {
 	rows := max(1, int((r.height - 2 * f.pad) / f.lh))
 	n := g.search.top.n
 
-	// Keep the selection on screen when there are more results than rows.
-	first := &g.res_first
-	if g.sel < first^ do first^ = g.sel
-	if g.sel >= first^ + rows do first^ = g.sel - rows + 1
-	first^ = clamp(first^, 0, max(0, n - rows))
-
 	if w := ui_take_wheel(r); w != 0 && n > 0 do g.sel = clamp(g.sel - int(w), 0, n - 1)
+
+	// PAGED, not scrolled: the list shows results 1-10, then - once the
+	// selection moves past the 10th - 11-20, and so on. A page is however
+	// many rows fit (`results` in settings.txt); how deep it goes is
+	// `max_results`.
+	first := results_first(rows)
 
 	cols := int((r.width - 2 * f.pad) / f.cw) - 1
 	for row in 0 ..< rows {
-		i := first^ + row
+		i := first + row
 		if i >= n do break
 		y := r.y + f.pad + f32(row) * f.lh
 		rr := rl.Rectangle{r.x, y, r.width, f.lh}
@@ -306,9 +306,27 @@ results_draw :: proc(r: rl.Rectangle) {
 
 		result_row_draw(item, r.x + f.pad + f.cw, y, cols)
 	}
+	// Where this page sits in the whole list.
+	if n > rows {
+		track := rl.Rectangle{r.x + r.width - 6, r.y + f.pad, 6, r.height - 2 * f.pad}
+		fill(track, COL_GUTTER)
+		th := max(f.lh / 2, track.height * f32(rows) / f32(n))
+		ty := track.y + (track.height - th) * f32(first) / f32(max(1, n - rows))
+		fill({track.x + 1, ty, 4, th}, COL_EDGE)
+	}
 	if n == 0 && len(g.query) > 0 && !search_busy(&g.search, &g.idx) {
 		draw_text("No matches.", r.x + f.pad + f.cw, r.y + f.pad, COL_DIM)
 	}
+}
+
+// How many result rows fit, and the first one on the selection's page.
+results_rows :: proc() -> int {
+	l := layout()
+	return max(1, int((l.results.height - 2 * g.font.pad) / g.font.lh))
+}
+
+results_first :: proc(rows: int) -> int {
+	return (max(0, g.sel) / rows) * rows
 }
 
 // One result: path, line number, text - the matched characters marked.
@@ -357,6 +375,13 @@ search_bar_draw :: proc(r: rl.Rectangle) {
 	} else {
 		total := search_items(&g.idx, g.mode)
 		right = fmt.tprintf("%s / %s", thousands(g.search.matched), thousands(total))
+		// Which page of the kept results is showing, once there is more than one.
+		if kept := g.search.top.n; kept > results_rows() {
+			first := results_first(results_rows())
+			page := fmt.tprintf("%v-%v of %s", first + 1, min(first + results_rows(), kept), thousands(kept))
+			if g.search.matched > kept do page = fmt.tprintf("%s best", page)
+			right = fmt.tprintf("%s   %s", page, right)
+		}
 		if g.mode == .Content do right = fmt.tprintf("%s   %s files", right, thousands(len(g.idx.files)))
 		if !index_done(&g.idx) {
 			right = fmt.tprintf("%s   reading %v%%", right, int(index_progress(&g.idx) * 100))

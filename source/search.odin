@@ -45,13 +45,17 @@ Search :: struct {
 	rules_ver: int,
 	done:      int, // items examined so far
 	matched:   int, // how many of those matched
+	// The best `k` so far, best first - far more than fit on screen, so the
+	// list pages (main_view.odin, results_draw). `top_buf` is its storage.
 	top:       fuzzy.Top,
+	top_buf:   []fuzzy.Ranked, // owned
 	// Bumped whenever `top` changes, so the list and viewer know to look.
 	stamp:     int,
 }
 
 search_destroy :: proc(s: ^Search) {
 	delete(s.query)
+	delete(s.top_buf)
 	s^ = {}
 }
 
@@ -120,7 +124,11 @@ search_step :: proc(s: ^Search, idx: ^Index, query: string, mode: Mode, k: int, 
 		s.rules_ver = rules_ver
 		s.done = 0
 		s.matched = 0
-		fuzzy.top_init(&s.top, k)
+		if len(s.top_buf) != k {
+			delete(s.top_buf)
+			s.top_buf = make([]fuzzy.Ranked, k)
+		}
+		fuzzy.top_init(&s.top, s.top_buf)
 		s.stamp += 1
 	}
 
@@ -145,13 +153,15 @@ search_step :: proc(s: ^Search, idx: ^Index, query: string, mode: Mode, k: int, 
 		idx     = idx,
 		pattern = &s.pattern,
 		mode    = mode,
-		k       = k,
 		start   = s.done,
 		end     = total,
 		started = time.tick_now(),
 		budget  = budget,
 	}
 	n := min(worker_count(), max(1, (total - s.done) / SEARCH_CHUNK))
+	// Each worker's own best-K, merged below. Allocated here, on this
+	// thread: the temp allocator is per thread, and freed at frame end.
+	for w in 0 ..< n do fuzzy.top_init(&job.tops[w], make([]fuzzy.Ranked, k, context.temp_allocator))
 	search_start := time.tick_now()
 	parallel(n, &job, search_worker, stats != nil ? &stats.busy : nil)
 	if stats != nil {
@@ -180,7 +190,6 @@ Search_Job :: struct {
 	idx:        ^Index,
 	pattern:    ^fuzzy.Pattern, // read-only from every worker
 	mode:       Mode,
-	k:          int,
 	start, end: int,
 	next_chunk: int, // atomic
 	started:    time.Tick,
@@ -193,7 +202,6 @@ Search_Job :: struct {
 search_worker :: proc(data: rawptr, worker: int) {
 	job := (^Search_Job)(data)
 	top := &job.tops[worker]
-	fuzzy.top_init(top, job.k)
 	buf: [CANDIDATE_MAX]u8
 	matched := 0
 	for time.tick_since(job.started) < job.budget {

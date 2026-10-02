@@ -393,29 +393,39 @@ better :: #force_inline proc "contextless" (a, b: Ranked) -> bool {
 	return a.item < b.item
 }
 
-// A fixed-size best-K list, kept sorted best first. Insertion sort: K is
-// tens, and nearly every candidate is rejected by the first comparison.
+// The best K, kept sorted best first, in a buffer the caller owns (its
+// length is K). Thousands deep, so the list can be paged through.
+//
+// Sorted insertion, found by binary search and made room for with one block
+// move. Nearly every candidate is rejected by the first comparison, against
+// the current worst; for those that get in, the move is a memmove of at most
+// K entries, and in a search over N candidates in no particular order only
+// about K * ln(N / K) of them ever get in.
 Top :: struct {
-	items: [MAX_TOP]Ranked,
+	items: []Ranked,
 	n:     int,
 	k:     int,
 }
 
-MAX_TOP :: 100
-
-top_init :: proc "contextless" (t: ^Top, k: int) {
+top_init :: proc "contextless" (t: ^Top, buf: []Ranked) {
+	t.items = buf
 	t.n = 0
-	t.k = clamp(k, 1, MAX_TOP)
+	t.k = len(buf)
 }
 
 top_push :: proc "contextless" (t: ^Top, r: Ranked) {
+	if t.k == 0 do return
 	if t.n == t.k && !better(r, t.items[t.n - 1]) do return
-	i := t.n < t.k ? t.n : t.n - 1
-	for i > 0 && better(r, t.items[i - 1]) {
-		t.items[i] = t.items[i - 1]
-		i -= 1
+	// The first position whose item r is better than.
+	lo, hi := 0, t.n
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if better(r, t.items[mid]) do hi = mid
+		else do lo = mid + 1
 	}
-	t.items[i] = r
+	last := t.n < t.k ? t.n : t.n - 1 // the worst falls off a full list
+	if last > lo do copy(t.items[lo + 1:last + 1], t.items[lo:last])
+	t.items[lo] = r
 	if t.n < t.k do t.n += 1
 }
 
