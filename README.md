@@ -1,176 +1,175 @@
-# FuzzyFinder (VIBECODE)
+# fff — Fast Fuzzy Finder
 
-Fast fuzzy search over **file names** and **file contents** on Windows using **fzf** + **ripgrep**, with a **syntax-highlighted preview** via **bat**. Opens results directly in your editor (VS Code, IntelliJ IDEA, Vim/Neovim, etc.).
+A self-contained fuzzy finder for file **contents** and file **names**, written in [Odin](https://odin-lang.org) with raylib. It runs on Windows and Linux.
+
+It replaces the old PowerShell `ff`, which glued together fzf, ripgrep and bat. fff does all of that itself in one executable. The font is compiled in, there are no tools to install, and nothing needs to be on your PATH except `fff` itself.
+
+```
+cd D:\Repos\MyProject
+fff
+```
+
+The folder you start fff in is the folder it searches, including every subfolder. You can also pass a folder: `fff D:\Repos\Other`.
+
+fff only **reads** files. To edit one, press Enter and it opens in your editor at the matched line.
 
 ---
 
-## Features
-
-- 🔎 Search **inside files** (content), **filenames only**, or **Git-tracked files**
-- 🖼️ Live **preview** with line highlighting via `bat`
-- ↗️ **Open on Enter** in your chosen editor at the exact line
-- 🎛️ Static **include/exclude extension filters** (e.g., `-IncludeExt py,ps1 -ExcludeExt log,tmp`)
-- ⌨️ Handy hotkeys while searching (content/files/git, scroll preview)
-
----
-
-## How it works (at a glance)
-
-- `ff.cmd` is a tiny wrapper that launches `fuzzyfinder.ps1`.
-- `fuzzyfinder.ps1` calls:
-  - `rg` (ripgrep) to list files or find matches
-  - `fzf` to interactively filter
-  - `bat` to preview around the matching line
-  - your editor’s CLI (e.g., `idea`, `code`, `vim`, `nvim`) to open the selection
-
----
-
-### Internal flow diagram
-
-        +---------------------+
-        |     Your terminal   |
-        +----------+----------+
-                   |
-            [ ff.cmd (wrapper) ]
-                   |
-            [ fuzzyfinder.ps1 ]
-                   |
-        +----------v----------+
-        |        fzf          |
-        +----+-----------+----+
-             |           |
-        reload        preview
-          |             |
-    +-----v----+   +----v----+
-    |    rg    |   |   bat    |
-    +----------+   +----------+
-             \          /
-              \        /
-               v      v
-         Open in your editor
-  (idea/code/nvim/vim/default)
-
-
----
-
-## Prerequisites
-
-Make sure these are installed and in your **PATH**:
-
-- [fzf](https://github.com/junegunn/fzf) – fuzzy finder  
-- [ripgrep (rg)](https://github.com/BurntSushi/ripgrep) – fast recursive search  
-- [bat](https://github.com/sharkdp/bat) – syntax-highlighted previews  
-- **An editor CLI**, for example:
-  - IntelliJ IDEA (`idea`) — enable via *Tools → Create Command-line Launcher…*
-  - VS Code (`code`)
-
-Verify installation (PowerShell):
-- fzf --version
-- rg --version
-- bat --version
-- git --version     # optional
-- idea --version    # or: code --version, nvim --version, etc.
-
-
-## Installation
-
-1. Clone/download repo.
-2. Put fuzzyfinder.ps1 + ff.cmd into a folder in PATH.
-3. (Optional) add wrappers like ffj.cmd, ffpython.cmd.
-
-Add folder temporarily (PowerShell):
-```
-$env:PATH += ';D:\tools\fuzzyfinder'
-```
-
----
-
-## Quick Start
-
-Default:
-```
-ff
-```
-
-Files-only:
-```
-ff -StartMode files
-```
-
-Git-tracked:
-```
-ff -StartMode git
-```
-
-IntelliJ + Java filter:
-```
-ff -App idea -IncludeExt java
-```
-
----
-
-## Usage
+## The screen
 
 ```
-ff [-StartMode content|files|git] [-App auto|idea|code|vim|nvim|default] ^
-   [-StartDir <path>] [-IncludeExt <ext[,ext...]>] [-ExcludeExt <ext[,ext...]>]
++--------------------------------------------+-----------+
+| viewer: the selected file, at the matched  |  ignored  |
+| line, matched characters underlined        |  folders  |
+|                                            |  & types  |
++--------------------------------------------+           |
+| results: the best 10, best first           |  key      |
+|                                            |  legend   |
++--------------------------------------------+-----------+
+| content > your query                   counts / status |
++--------------------------------------------------------+
 ```
 
-Examples:
+The layout uses the whole window at whatever size it is. There is no fixed canvas, so a bigger window shows more lines.
+
+## Keys
+
+| Key | Does |
+|---|---|
+| typing | edits the query (when the search line has focus) |
+| Up / Down | moves through the results; the viewer follows |
+| Enter | opens the selected file in its default app, **at the line** for known editors |
+| Tab | switches focus between the search line and the viewer (the focused one has an amber outline) |
+| W / S | viewer: one line up / down (viewer focused) |
+| E / D | viewer: half a page up / down (viewer focused) |
+| A / F, Home / End | viewer: scroll sideways; jump to the top / bottom (viewer focused) |
+| PageUp / PageDown | viewer: half a page, whatever has focus |
+| Alt+C / Alt+F | content mode / files mode |
+| Ctrl+V, Ctrl+U, Ctrl+Backspace | paste, clear the query, delete a word |
+| Right-click a result | open in system default, open in…, exclude its folder or file type |
+| Double-click a result | opens it, like Enter |
+| Esc | the menu: display mode, resolution, font size, result rows, FPS cap, quit |
+| F11 | windowed / borderless |
+
+## Searching
+
+**Content mode** (the default) matches every non-empty line as `path:line: text`, the way `rg -n '.'` piped into fzf did. So `app update` finds `game_update :: proc()` in `source/app.odin`: "app" matches the path and "update" matches the text.
+
+**Files mode** (Alt+F) matches file paths only.
+
+The scoring is fzf's: word-boundary, camelCase and consecutive-match bonuses, and gap penalties. The query syntax is fzf's extended mode:
+
+| Query | Matches |
+|---|---|
+| `abc` | fuzzy |
+| `'abc` | exact substring |
+| `^abc` / `abc$` | starts / ends with |
+| `!abc` | must **not** contain |
+| `a b` | every term must match |
+
+Lower-case terms match either case. A capital letter makes that term case-sensitive.
+
+The index is built in the background, a slice of each frame, so the window appears at once and results arrive while files are still being read. Searching uses every core.
+
+Binary files (a NUL byte in the first 8000 bytes) and files over `max_file_kb` are not read, but they still appear in files mode.
+
+## Ignoring folders and file types
+
+The panel on the right lists what is left out. Right-click a result to add to it:
+
+| Menu item | Adds | Meaning |
+|---|---|---|
+| Exclude folder … from all searches | `rlu/` | any folder **named** `rlu`, in every tree fff is opened in (saved) |
+| Exclude folder … from this search | `/source/rlu/` | that one folder, until fff closes |
+| Exclude `*.ext` from all searches | `log` | that file type everywhere (saved) |
+| Exclude `*.ext` from this search | `log` | until fff closes |
+
+Hover over an entry and click its × to remove it. `.git/` and `node_modules/` are in the global list by default, and you can remove them too. fff does **not** read `.gitignore` files; the panel is the only ignore list.
+
+## Opening files
+
+**Enter** asks the system which app opens that kind of file. If it is an editor fff knows, fff passes the line:
+
+| Editor | How the line is passed |
+|---|---|
+| VS Code, VSCodium, Cursor, Windsurf | `-g file:line` |
+| JetBrains IDEs (IntelliJ, PyCharm, CLion, Rider, …) | `--line line file` |
+| Notepad++ | `-nline file` |
+| Sublime Text, Zed | `file:line` |
+| gVim, Emacs, gedit | `+line file` |
+| Kate | `-l line file` |
+
+Any other app gets the file without a line.
+
+- **Windows:** the app comes from the file association (`AssocQueryString`). If nothing is associated, fff looks for `code`, `idea`, Notepad++ and similar on PATH. If none is found, Windows shows its "Open with" dialog.
+- **Linux:** the app comes from `xdg-mime` and its `.desktop` file. If fff can't pass a line to it, it falls back to `xdg-open`.
+
+To always use one editor, set `editor` in settings.txt. `{file}` and `{line}` are filled in:
+
 ```
-ff -StartDir 'D:\Repos\MyProject'
-ff -App code
-ff -App idea -IncludeExt java
+editor = "code -g {file}:{line}"
 ```
 
----
+**Open In…** in the right-click menu shows the Windows "Open with" dialog. On Linux it asks for a command, such as `gedit +{line}` or `code -g {file}:{line}`, and remembers the last few.
 
-## Hotkeys
+## Settings
 
-- Enter → open file at line
-- Alt+C → content mode
-- Alt+F → files mode
-- Alt+G → git mode
-- Shift+↑/↓ → scroll preview
-- Header shows include/exclude filters
+Settings are stored in `%APPDATA%\fff\settings.txt` on Windows and `~/.config/fff/settings.txt` on Linux. The file is SJSON, the same format as the other Odin projects, and safe to edit by hand. The path is also shown in the Esc menu.
 
----
-
-## Editor integration
-
-- IntelliJ IDEA: idea --line <n> <path>
-- VS Code: code -g "<path>:<n>"
-- Vim/Neovim: nvim +<n> <path>
-- default: OS default app
-
----
-
-## Wrappers
-
-Example: ffj.cmd
 ```
-@echo off
-call "%%~dp0ff.cmd" -App idea -IncludeExt java %%*
-```
-
-Example: ffpython.cmd
-```
-@echo off
-call "%%~dp0ff.cmd" -App code -IncludeExt py,pyw %%*
+display_mode     = "windowed"      // windowed | borderless | fullscreen
+window_w         = 1600            // the window remembers its size and place
+font_size        = 18
+results          = 10              // result rows
+max_fps          = 60
+max_file_kb      = 4096            // larger files are listed, not read
+editor           = ""              // "" = the system default app, see above
+ignore_folders   = [".git/", "node_modules/"]
+ignore_types     = []
 ```
 
 ---
 
-## Troubleshooting
+## Building
 
-- unknown option → usually quoting, ensure ff.cmd calls fuzzyfinder.ps1
-- .class/.jar preview unreadable → decompile first
-- IntelliJ not opening → ensure idea launcher on PATH
+You need Odin **dev-2026-06 or newer**; the new `core:os` API is required. raylib comes with Odin under `vendor:raylib`.
 
----
+| | Windows | Linux |
+|---|---|---|
+| Release: one self-contained exe | `build_release.bat` → `build\fff.exe` | `./build_release.sh` → `build/fff` |
+| Hot reload (development) | `build_hot_reload.bat`, run `build\fff_dev.exe [folder]` | `./build_hot_reload.sh`, run `./build/fff_dev [folder]` |
+| Tests (matcher, ignore rules) | `test.bat` | `./test.sh` |
+| Timing, no window | `odin run tools/bench -o:speed -- <folder> <query>…` | same |
 
-## Uninstall
+Put `build\fff.exe` (or `build/fff`) in a folder on your PATH. The Windows release is built with `-subsystem:windows`, so starting it from cmd returns the prompt at once. On Linux, run `fff &` if you want the terminal back.
 
-Remove ff.cmd, fuzzyfinder.ps1, and any wrappers from PATH.
+The hot-reload setup is the same as in the Music Box and Animal Kingdoms. All state lives in one `App` block, and running `build_hot_reload` while `fff_dev` is open swaps the code within a frame, keeping the index, query and scroll position. F5 forces a reload and F6 restarts. Indexing and search threads are joined every frame, so a reload never has a thread running inside the old library.
 
----
+## Layout
+
+```
+source/
+  app.odin            the frame, the App block, the hot-reload exports
+  index.odin          walking the tree and reading files, a slice per frame
+  search.odin         running the query over the index, across all cores
+  parallel.odin       fan-out / join helper
+  main_view.odin      viewer, results, search line, ignore panel
+  overlays.odin       right-click menu, Esc menu, Linux "Open In..." prompt
+  input.odin          keys and line editing
+  launch*.odin        opening files: shared, Windows, Linux
+  display.odin        window modes and resolutions
+  settings.odin       settings.txt
+  ui.odin             palette, font, widgets
+  fuzzy/              the matcher (pure, tested)
+  ignore/             the ignore rules (pure, tested)
+  fonts/              JetBrains Mono, SIL Open Font License (OFL.txt)
+main_release/         entry point for the release exe
+main_hot_reload/      the dev host
+tools/bench/          headless timing
+```
+
+The old PowerShell scripts (`ff.cmd`, `ffj.cmd`, `fuzzyfinder.ps1`) are still in the repo for reference. fff doesn't use them.
+
+## Licence
+
+fff is public domain (see LICENSE). JetBrains Mono is © The JetBrains Mono Project Authors, under the SIL Open Font License 1.1 (`source/fonts/OFL.txt`).
