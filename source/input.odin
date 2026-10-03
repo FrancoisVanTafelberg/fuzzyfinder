@@ -46,6 +46,11 @@ main_keys :: proc() {
 		g.focus = g.focus == .Search ? .Viewer : .Search
 	}
 
+	// Paste goes to the search line whatever has focus: pasting is typing.
+	if paste_pressed() {
+		g.focus = .Search
+	}
+
 	if alt_down() {
 		if rl.IsKeyPressed(.C) do set_mode_search(.Content)
 		if rl.IsKeyPressed(.F) do set_mode_search(.Files)
@@ -90,15 +95,22 @@ edit_line :: proc(buf: ^[dynamic]u8, cursor: ^int) -> bool {
 	cursor^ = clamp(cursor^, 0, len(buf))
 	ctrl := ctrl_down()
 
-	if ctrl {
-		if rl.IsKeyPressed(.V) {
-			clip := string(rl.GetClipboardText())
-			// One line only: a pasted newline would be a search for nothing.
-			if i := strings.index_any(clip, "\r\n"); i >= 0 do clip = clip[:i]
+	if paste_pressed() {
+		// Pasted text with spaces in it goes in as one exact phrase, "like
+		// this": a copied sentence or log line is meant literally, and split
+		// into words it would match each one fuzzily, anywhere on a line.
+		// Ctrl+Shift+V pastes the words as separate terms, as if typed.
+		as_typed := ctrl && shift_down()
+		clip := clean_paste(string(rl.GetClipboardText()), !as_typed)
+		if len(clip) > 0 {
 			inject_at(buf, cursor^, ..transmute([]u8)clip)
 			cursor^ += len(clip)
-			changed = len(clip) > 0
+			changed = true
 		}
+		return changed
+	}
+
+	if ctrl {
 		if rl.IsKeyPressed(.U) && len(buf) > 0 {
 			clear(buf)
 			cursor^ = 0
@@ -149,6 +161,58 @@ edit_line :: proc(buf: ^[dynamic]u8, cursor: ^int) -> bool {
 	if rl.IsKeyPressed(.HOME) do cursor^ = 0
 	if rl.IsKeyPressed(.END) do cursor^ = len(buf)
 	return changed
+}
+
+// Ctrl+V or Shift+Insert (as a phrase), Ctrl+Shift+V (as typed).
+paste_pressed :: proc() -> bool {
+	return (ctrl_down() && rl.IsKeyPressed(.V)) || (shift_down() && !ctrl_down() && rl.IsKeyPressed(.INSERT))
+}
+
+// The longest thing a paste will put in the search line.
+PASTE_MAX :: 4096
+
+// What the clipboard should become in a one-line search box.
+//
+// THE FIRST LINE THAT HAS SOMETHING ON IT. Copying a whole line in an editor
+// often brings its newline - and sometimes the blank line before it - and a
+// search for a line break finds nothing. Later lines are dropped rather than
+// joined: a line is what fff searches, so text from two lines can never match
+// one result.
+//
+// Tabs become spaces (a tab cannot be typed into the box either), other
+// control characters go, and the ends are trimmed: an editor selection
+// usually grabs the indentation, which only makes the match worse.
+//
+// `phrase` wraps it in quotes - the exact-phrase syntax (fuzzy.odin) - when
+// it has a space in it; one word is left bare, where fuzzy already finds it
+// first. Inside a phrase a quote would end it early, so those are dropped.
+clean_paste :: proc(clip: string, phrase := false) -> string {
+	line := ""
+	rest := clip
+	for l in strings.split_lines_iterator(&rest) {
+		t := strings.trim_space(l)
+		if t != "" {
+			line = t
+			break
+		}
+	}
+	as_phrase := phrase && strings.contains_any(line, " \t")
+	b := strings.builder_make(context.temp_allocator)
+	if as_phrase do strings.write_byte(&b, '"')
+	for r in line {
+		if strings.builder_len(b) >= PASTE_MAX do break
+		switch {
+		case r == '\t':
+			strings.write_byte(&b, ' ')
+		case r < 0x20 || r == 0x7F:
+		case as_phrase && r == '"':
+		case:
+			strings.write_rune(&b, r)
+		}
+	}
+	if as_phrase do strings.write_byte(&b, '"')
+	out := strings.to_string(b)
+	return out == "\"\"" ? "" : out
 }
 
 @(private = "file")

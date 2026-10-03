@@ -86,6 +86,32 @@ positions_are_reported :: proc(t: ^testing.T) {
 }
 
 @(test)
+quoted_phrases_are_exact :: proc(t: ^testing.T) {
+	_, ok := score_of("\"gets an upgraded\"", "Aragorn gets an upgraded battle model")
+	testing.expect(t, ok)
+	_, ok = score_of("\"gets upgraded\"", "Aragorn gets an upgraded battle model")
+	testing.expect(t, !ok, "a phrase is not fuzzy")
+	_, ok = score_of("\"gets an upg", "Aragorn gets an upgraded battle model")
+	testing.expect(t, ok, "the closing quote is optional")
+	_, ok = score_of("aragorn !\"battle model\"", "Aragorn gets an upgraded battle model")
+	testing.expect(t, !ok, "a negated phrase rejects")
+	_, ok = score_of("\"battle model\" aragorn", "Aragorn gets an upgraded battle model")
+	testing.expect(t, ok, "terms after a phrase still parse")
+	p := parse("\"a b\"")
+	testing.expect_value(t, p.n, 1)
+	testing.expect(t, !p.terms[0].checkable, "a space could come from the ': ' between path and text")
+}
+
+@(test)
+long_terms_are_kept :: proc(t: ^testing.T) {
+	long := "unit_models/AttachmentSets/final_general_gondor_norm_Early.texture_and_then_some_more_to_go_well_past_one_hundred_and_twenty_eight_bytes_long"
+	_, ok := score_of(long, long)
+	testing.expect(t, ok)
+	_, ok = score_of(long, "unit_models/AttachmentSets/final_general_gondor_norm_Early.texture")
+	testing.expect(t, !ok, "every byte of a long term counts")
+}
+
+@(test)
 lone_operators_are_ignored :: proc(t: ^testing.T) {
 	p := parse("  !  '  ")
 	testing.expect(t, is_empty(&p))

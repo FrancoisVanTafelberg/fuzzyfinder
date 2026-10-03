@@ -45,7 +45,9 @@ The layout uses the whole window at whatever size it is. There is no fixed canva
 | A / F, Home / End | viewer: scroll sideways; jump to the top / bottom (viewer focused) |
 | PageUp / PageDown | viewer: half a page, whatever has focus |
 | Alt+C / Alt+F | content mode / files mode |
-| Ctrl+V, Ctrl+U, Ctrl+Backspace | paste, clear the query, delete a word |
+| Ctrl+V, Shift+Insert | paste into the search line, whatever has focus. Text with spaces goes in as one exact phrase (`"like this"`). |
+| Ctrl+Shift+V | paste the words as separate terms, as if typed |
+| Ctrl+U, Ctrl+Backspace | clear the query, delete a word |
 | Right-click a result | open in system default, open in…, exclude its folder or file type |
 | Double-click a result | opens it, like Enter |
 | F3 | the performance panel, above the key legend: CPU, memory, disk, index rate, where each frame went, and how busy each thread is |
@@ -84,7 +86,11 @@ The scoring is fzf's: word-boundary, camelCase and consecutive-match bonuses, an
 | `'abc` | exact substring |
 | `^abc` / `abc$` | starts / ends with |
 | `!abc` | must **not** contain |
+| `"a b c"` | the exact phrase, spaces included. The closing quote is optional. |
+| `!"a b"` | must **not** contain the phrase |
 | `a b` | every term must match |
+
+**Pasting.** A paste takes the first non-blank line of the clipboard. Tabs become spaces and the ends are trimmed. A term can be up to 512 characters, so long paths and log lines paste whole.
 
 Lower-case terms match either case. A capital letter makes that term case-sensitive.
 
@@ -102,6 +108,17 @@ The panel on the right lists what is left out. Right-click a result to add to it
 | Exclude folder … from this search | `/source/rlu/` | that one folder, until fff closes |
 | Exclude `*.ext` from all searches | `log` | that file type everywhere (saved) |
 | Exclude `*.ext` from this search | `log` | until fff closes |
+
+**Choosing the folder.** Point at any folder in a result's path before right-clicking, and the exclude entries are about that folder. For `data/unit_models/battle_models.modeldb.bak`:
+
+| Mouse over | Excludes |
+|---|---|
+| `data/` | `data/` everywhere, or `/data/` in this search |
+| `unit_models/` | `unit_models/` everywhere, or `/data/unit_models/` in this search |
+| the file name, or the rest of the row | the file's own folder (`unit_models/`) |
+| `.bak` | the same folder entries; the `*.bak` entries are highlighted |
+
+The part under the mouse is underlined as you move over the path.
 
 Hover over an entry and click its × to remove it. `.git/` and `node_modules/` are in the global list by default, and you can remove them too. fff does **not** read `.gitignore` files; the panel is the only ignore list.
 

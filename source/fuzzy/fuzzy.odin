@@ -27,6 +27,9 @@ package fuzzy
         !abc     must NOT contain (exact)
         ^abc     starts with (exact)
         abc$     ends with (exact)
+        "a b c"  exact phrase, spaces and all (the closing quote is optional,
+                 so a phrase still being typed already searches)
+        !"a b"   must NOT contain the phrase
 
     Space-separated terms must ALL match; their scores add up. Smart case per
     term: all-lowercase matches any case, a capital makes the term exact-case.
@@ -44,7 +47,9 @@ BONUS_BOUNDARY_WHITE :: BONUS_BOUNDARY + 2
 BONUS_BOUNDARY_DELIMITER :: BONUS_BOUNDARY + 1
 
 MAX_TERMS :: 16
-MAX_TERM_LEN :: 128
+// Long enough for a pasted path or log line; a longer term is cut here and
+// still matches by its first MAX_TERM_LEN bytes.
+MAX_TERM_LEN :: 512
 // The most positions `match` can report. A pattern longer than this still
 // matches; only the highlighting stops.
 MAX_POSITIONS :: 256
@@ -72,7 +77,7 @@ Term_Kind :: enum u8 {
 Term :: struct {
 	kind:           Term_Kind,
 	case_sensitive: bool,
-	// No digit or ':' in it: see could_match.
+	// No digit, ':' or space in it: see could_match.
 	checkable:      bool,
 	len:            int,
 	text:           [MAX_TERM_LEN]u8, // folded to lower case unless case_sensitive
@@ -149,13 +154,29 @@ parse :: proc(query: string) -> (p: Pattern) {
 	i := 0
 	for i < len(query) && p.n < MAX_TERMS {
 		for i < len(query) && query[i] == ' ' do i += 1
-		start := i
-		for i < len(query) && query[i] != ' ' do i += 1
-		word := query[start:i]
-		if len(word) == 0 do continue
+		if i >= len(query) do break
 
 		t: Term
-		switch {
+		word: string
+		// "a phrase" or !"a phrase": everything up to the closing quote,
+		// spaces included, matched exactly.
+		q := i
+		if query[q] == '!' && q + 1 < len(query) && query[q + 1] == '"' do q += 1
+		if query[q] == '"' {
+			t.kind = q > i ? .Negate : .Exact
+			start := q + 1
+			end := start
+			for end < len(query) && query[end] != '"' do end += 1
+			word = query[start:end]
+			i = min(end + 1, len(query))
+		} else {
+			start := i
+			for i < len(query) && query[i] != ' ' do i += 1
+			word = query[start:i]
+		}
+		if len(word) == 0 do continue
+
+		if t.kind == .Fuzzy do switch {
 		case word[0] == '!':
 			t.kind = .Negate
 			word = word[1:]
@@ -175,7 +196,7 @@ parse :: proc(query: string) -> (p: Pattern) {
 		t.checkable = true
 		for c in transmute([]u8)word {
 			if c >= 'A' && c <= 'Z' do t.case_sensitive = true
-			if (c >= '0' && c <= '9') || c == ':' do t.checkable = false
+			if (c >= '0' && c <= '9') || c == ':' || c == ' ' do t.checkable = false
 		}
 		for c, j in transmute([]u8)word do t.text[j] = t.case_sensitive ? c : fold(c)
 		t.len = len(word)
