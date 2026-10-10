@@ -1,18 +1,12 @@
 package fff
 
 /*
-    Fan work out over the CPU's cores, and JOIN BEFORE RETURNING.
+    Fan work out over the cores and wait for all of it: the search thread's
+    rounds (search.odin) are split this way. Each slot's working time is
+    measured for the metrics panel (perf.odin).
 
-    That second half is the point. fff is built as a hot-reloadable library
-    (see main_hot_reload), and a thread left running across a reload would be
-    executing code from a library that has just been unloaded. So no thread in
-    fff outlives the frame that started it: indexing and searching each take a
-    slice of the frame's time budget, split it over the cores, and are joined
-    before the frame draws. The frame stays responsive, and there is nothing
-    in flight to go wrong when the code underneath changes.
-
-    Each slot's working time is measured, for the metrics panel: slot 0 is the
-    main thread taking its share, slots 1.. are the workers. See perf.odin.
+    It runs on the SEARCH thread, never on the main thread: waiting here
+    is fine because nothing on screen depends on it.
 */
 
 import "core:os"
@@ -39,6 +33,8 @@ Slot :: struct {
 
 @(private = "file")
 run_slot :: proc(s: ^Slot) {
+	// Slot 0 runs on the calling thread, which has its own priority already.
+	if s.worker != 0 do thread_lower_priority()
 	start := time.tick_now()
 	s.work(s.data, s.worker)
 	s.took = time.tick_since(start)

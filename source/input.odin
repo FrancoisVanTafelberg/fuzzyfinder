@@ -57,7 +57,7 @@ main_keys :: proc() {
 		return // Alt+letter is a command, never typing
 	}
 
-	n := g.search.top.n
+	n := results_count()
 	if key_hit(.UP) && n > 0 do g.sel = max(0, g.sel - 1)
 	if key_hit(.DOWN) && n > 0 do g.sel = min(n - 1, g.sel + 1)
 	half := max(1, viewer_rows() / 2)
@@ -233,14 +233,14 @@ word_right :: proc(b: []u8, at: int) -> int {
 
 // The selected result's file, and its line (1-based; 1 in files mode).
 selected_target :: proc() -> (file: int, line: int, ok: bool) {
-	if g.search.top.n == 0 do return -1, 0, false
-	item := g.search.top.items[clamp(g.sel, 0, g.search.top.n - 1)].item
-	switch g.search.mode {
+	n := results_count()
+	if n == 0 do return -1, 0, false
+	r := g.res.items[clamp(g.sel, 0, n - 1)]
+	switch g.res.mode {
 	case .Files:
-		return int(item), 1, true
+		return int(r.item), 1, true
 	case .Content:
-		ref := g.idx.lines[item]
-		return int(ref.file), int(ref.line) + 1, true
+		return int(r.item), int(r.line) + 1, true
 	}
 	return -1, 0, false
 }
@@ -248,6 +248,6 @@ selected_target :: proc() -> (file: int, line: int, ok: bool) {
 open_selected :: proc() {
 	file, line, ok := selected_target()
 	if !ok do return
-	f := &g.idx.files[file]
+	f := index_file(g.idx, file)
 	open_at_line(abs_path(f), line, f.rel)
 }

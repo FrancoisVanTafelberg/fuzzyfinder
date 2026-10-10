@@ -75,3 +75,18 @@ os_sample :: proc() -> (s: Os_Sample) {
 	}
 	return
 }
+
+// The machine's physical memory, for the index's default limit. 0 = unknown.
+os_total_memory :: proc() -> i64 {
+	ms := win.MEMORYSTATUSEX {
+		dwLength = size_of(win.MEMORYSTATUSEX),
+	}
+	if !win.GlobalMemoryStatusEx(&ms) do return 0
+	return i64(ms.ullTotalPhys)
+}
+
+// Background threads step aside for the main thread: on a busy machine the
+// window keeps drawing.
+thread_lower_priority :: proc() {
+	win.SetThreadPriority(win.GetCurrentThread(), -1) // THREAD_PRIORITY_BELOW_NORMAL
+}

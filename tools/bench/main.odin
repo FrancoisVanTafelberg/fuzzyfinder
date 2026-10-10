@@ -1,7 +1,8 @@
 package bench
 
-// Headless timing of the index and the search: odin run tools/bench -o:speed -- <dir> <query>...
-// No window: index_step and search_step never touch raylib.
+// Headless timing of the index and the search:
+//   odin run tools/bench -o:speed -- <dir> <query>...
+// No window: the index and the search engine never touch raylib.
 
 import "core:fmt"
 import "core:os"
@@ -16,36 +17,34 @@ main :: proc() {
 	ignore.add_folder(&global, ".git")
 	lists := []^ignore.Rules{&global}
 
-	idx: fff.Index
-	fff.index_restart(&idx, 4096 * 1024)
 	t0 := time.tick_now()
-	frames := 0
-	for !fff.index_done(&idx) {
-		fff.index_step(&idx, root, lists, 16 * time.Millisecond)
-		frames += 1
-		free_all(context.temp_allocator)
-	}
-	el := time.tick_since(t0)
-	fmt.printfln("indexed %v files, %v lines, %.1f MB in %v (%v frames)", len(idx.files), len(idx.lines), f64(idx.text_bytes) / 1e6, el, frames)
+	idx := fff.index_start(root, 1, 4096 * 1024, 0, lists, max(2, fff.worker_count()))
+	for !fff.index_done(idx) do time.sleep(time.Millisecond)
+	fmt.printfln("indexed %v files, %v lines, %.1f MB in %v", fff.index_count(idx), idx.lines, f64(idx.text_bytes) / 1e6, time.tick_since(t0))
 
+	st: fff.Search_State
 	for q in queries {
 		for mode in fff.Mode {
-			s: fff.Search
+			query: fff.Search_Query
+			query.text_len = copy(query.text[:], q)
+			query.mode = mode
+			query.k = 1000
+			query.idx = idx
+			fff.search_reset(&st, &query)
 			t1 := time.tick_now()
-			fr := 0
 			for {
-				fff.search_step(&s, &idx, q, mode, 1000, 0, 1000 * time.Millisecond)
-				fr += 1
-				if !fff.search_busy(&s, &idx) do break
+				_, complete := fff.search_round(&st, time.Second)
+				if complete do break
 			}
-			fmt.printfln("  %-8v %-14q %8v matched, %v", mode, q, s.matched, time.tick_since(t1))
-			if s.top.n > 0 {
-				it := s.top.items[0]
+			fmt.printfln("  %-8v %-14q %8v matched, %v", mode, q, st.matched, time.tick_since(t1))
+			if st.top.n > 0 {
+				it := st.top.items[0]
 				buf: [2048]u8
-				text, _ := fff.candidate(&idx, mode, it.item, buf[:])
+				text, _ := fff.candidate(idx, mode, int(it.item), int(it.line), buf[:])
 				fmt.printfln("           best (%v): %s", it.score, string(text[:min(len(text), 100)]))
 			}
-			fff.search_destroy(&s)
 		}
 	}
+	fff.search_state_destroy(&st)
+	fff.index_free(idx)
 }

@@ -50,7 +50,7 @@ The layout uses the whole window at whatever size it is. There is no fixed canva
 | Ctrl+U, Ctrl+Backspace | clear the query, delete a word |
 | Right-click a result | open in system default, open in…, exclude its folder or file type |
 | Double-click a result | opens it, like Enter |
-| F3 | the performance panel, above the key legend: CPU, memory, disk, index rate, where each frame went, and how busy each thread is |
+| F3 | the performance panel, above the key legend: CPU, memory, disk, index rate, where each frame went, and how busy each background thread is |
 | Esc | the menu: display mode, resolution, font size, result rows, FPS cap, quit |
 | F11 | windowed / borderless |
 
@@ -65,8 +65,8 @@ The panel sits above the key legend. It is on by default, and F3 or `show_metric
 | mem | fff's resident memory, and how much of it is the index (file text plus line tables) |
 | disk | bytes read per second, as the OS counts it and as fff counts it |
 | index | files read and folders listed per second |
-| main thread | one stacked bar per frame: walk, read, lines, search, draw, and wait (presenting and waiting for vsync) |
-| threads | one column per core fff uses, showing the share of the last half second it spent working. "main" is the main thread taking its share. |
+| main thread | one stacked bar per frame: update, draw, and wait (presenting and waiting for vsync). The main thread does no indexing or searching, so nearly all of it should be wait. |
+| threads | one column per background thread (the walker, the readers, the search workers), showing the share of the last half second it spent working |
 
 While the panel is showing and fff is idle, it redraws 20 times a second instead of sleeping, so the readout stays live. Turn it off for a fully idle fff.
 
@@ -94,9 +94,9 @@ The scoring is fzf's: word-boundary, camelCase and consecutive-match bonuses, an
 
 Lower-case terms match either case. A capital letter makes that term case-sensitive.
 
-The index is built in the background, a slice of each frame, so the window appears at once and results arrive while files are still being read. Searching uses every core.
+The index is built and searched on background threads, so the window appears at once, stays responsive, and results arrive while files are still being read. A spinner in the search line (and in the viewer, for a file not read yet) shows that work is still going on. Searching uses every core.
 
-Binary files (a NUL byte in the first 8000 bytes) and files over `max_file_kb` are not read, but they still appear in files mode.
+Binary files (a NUL byte in the first 8000 bytes) and files over `max_file_kb` are not read, but they still appear in files mode. Once the index holds `max_index_mb` of text, fff stops reading more files and says so in red in the status line; the rest are still listed in files mode.
 
 ## Ignoring folders and file types
 
@@ -160,10 +160,27 @@ results          = 10              // result rows per page
 max_results      = 1000            // how many results are kept to page through
 max_fps          = 60
 max_file_kb      = 4096            // larger files are listed, not read
+max_index_mb     = 0               // text held in memory at most; 0 = half the machine's RAM
+show_metrics     = true            // the F3 panel
 editor           = ""              // "" = the system default app, see above
 ignore_folders   = [".git/", "node_modules/"]
 ignore_types     = []
 ```
+
+## When something is slow: fff.log
+
+fff writes `fff.log` next to settings.txt. It records only problems:
+
+| Line | Means |
+|---|---|
+| `slow frame: …` | a frame kept the window busy for more than 150 ms, with where the time went |
+| `main thread stuck … for …` | the window did not finish a frame for over a second (a watchdog thread checks) |
+| `reader N stuck: … on <file>` | one file has taken over 5 seconds to read (a network drive, a locked file) |
+| `walker stuck: … listing <folder>` | listing one folder has taken over 5 seconds |
+| `slow read: …` | a file took over a second to read |
+| `dropped input queued during a … freeze` | keys and clicks made while the window was frozen were thrown away rather than applied late |
+
+The log is truncated at each start.
 
 ---
 
@@ -174,22 +191,35 @@ You need Odin **dev-2026-06 or newer**; the new `core:os` API is required. rayli
 | | Windows | Linux |
 |---|---|---|
 | Release: one self-contained exe | `build_release.bat` → `build\fff.exe` | `./build_release.sh` → `build/fff` |
-| Hot reload (development) | `build_hot_reload.bat`, run `build\fff_dev.exe [folder]` | `./build_hot_reload.sh`, run `./build/fff_dev [folder]` |
 | Tests (matcher, ignore rules) | `test.bat` | `./test.sh` |
 | Timing, no window | `odin run tools/bench -o:speed -- <folder> <query>…` | same |
 
 Put `build\fff.exe` (or `build/fff`) in a folder on your PATH. The Windows release is built with `-subsystem:windows`, so starting it from cmd returns the prompt at once. On Linux, run `fff &` if you want the terminal back.
 
-The hot-reload setup is the same as in the Music Box and Animal Kingdoms. All state lives in one `App` block, and running `build_hot_reload` while `fff_dev` is open swaps the code within a frame, keeping the index, query and scroll position. F5 forces a reload and F6 restarts. Indexing and search threads are joined every frame, so a reload never has a thread running inside the old library.
+There is no hot-reload build: fff is small enough to rebuild and rerun.
+
+## Threads
+
+| Thread | Does |
+|---|---|
+| main | input and drawing only. It never reads a file, walks a folder or searches, so it can't freeze on a big tree. |
+| walker | lists folders breadth-first, skipping ignored ones, and publishes each file it finds |
+| readers (one per core, at least two) | read files, detect binary, build each file's line table |
+| searcher, plus a worker per core | runs the query over the index in rounds; a new keystroke cancels the old search at once |
+| watchdog | writes to fff.log when any of the above gets stuck |
+| launches | opening a file runs on its own short-lived thread, so a slow editor start can't block the window |
+
+The index is stored in chunks that never move, so other threads read it without locks while it grows. A rebuild (after removing an ignore rule) builds a new index beside the old one and swaps it in; the old one is freed on a throwaway thread. Background threads run at lower priority than the window.
 
 ## Layout
 
 ```
 source/
-  app.odin            the frame, the App block, the hot-reload exports
-  index.odin          walking the tree and reading files, a slice per frame
-  search.odin         running the query over the index, across all cores
-  parallel.odin       fan-out / join helper
+  app.odin            the frame, the App block, starting and swapping the index and search
+  index.odin          the walker and reader threads, and the index they fill
+  search.odin         the search thread, running the query over the index on all cores
+  parallel.odin       fan-out / join helper for the search thread
+  watch.odin          fff.log and the watchdog
   main_view.odin      viewer, results, search line, ignore panel
   overlays.odin       right-click menu, Esc menu, Linux "Open In..." prompt
   input.odin          keys and line editing
@@ -203,7 +233,6 @@ source/
   fonts/              JetBrains Mono, SIL Open Font License (OFL.txt)
 main_release/         entry point for the release exe
 .design/             design notes, such as performance_improvements.md
-main_hot_reload/      the dev host
 tools/bench/          headless timing
 ```
 

@@ -293,3 +293,10 @@ stepper :: proc(r: rl.Rectangle, shown: string, enabled := true) -> int {
 with_alpha :: proc(c: rl.Color, a: u8) -> rl.Color {
 	return {c.r, c.g, c.b, a}
 }
+
+// A turning arc: something is going on in the background. Its angle comes
+// from the clock, so it turns at the same speed whatever the frame rate.
+spinner_draw :: proc(cx, cy, radius: f32, col := COL_ACCENT) {
+	a := f32(rl.GetTime() * 360) // a turn a second
+	rl.DrawRing({cx, cy}, radius * 0.6, radius, a, a + 270, 24, col)
+}

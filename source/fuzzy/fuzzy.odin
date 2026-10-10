@@ -400,18 +400,22 @@ could_match :: proc "contextless" (p: ^Pattern, a, b: []u8) -> bool {
 // Ranking
 // ---------------------------------------------------------------------------
 
-// One ranked candidate. `item` is whatever the caller indexes by; `length` is
-// the tiebreak (shorter wins, as in fzf), then the item index (earlier wins).
+// One ranked candidate. `item` and `line` are whatever the caller indexes by
+// (fff: a file, and a line in it). `length` is the tiebreak (shorter wins, as
+// in fzf), then item and line (earlier wins), so the order is total: the same
+// candidates rank the same however the work was split between threads.
 Ranked :: struct {
 	score:  i32,
 	length: u32,
 	item:   u32,
+	line:   u32,
 }
 
 better :: #force_inline proc "contextless" (a, b: Ranked) -> bool {
 	if a.score != b.score do return a.score > b.score
 	if a.length != b.length do return a.length < b.length
-	return a.item < b.item
+	if a.item != b.item do return a.item < b.item
+	return a.line < b.line
 }
 
 // The best K, kept sorted best first, in a buffer the caller owns (its

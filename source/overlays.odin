@@ -55,7 +55,7 @@ context_menu_open :: proc(at: rl.Vector2, row: int, hover: Path_Hover = {}) {
 		on_dir  = hover.part == .Folder,
 		on_type = hover.part == .Ext,
 	}
-	rel := g.idx.files[file].rel
+	rel := index_file(g.idx, file).rel
 	dir := ""
 	if hover.part == .Folder && hover.end <= len(rel) {
 		dir = rel[:hover.end]
@@ -96,11 +96,11 @@ Ctx_Item :: struct {
 @(private = "file")
 ctx_items :: proc() -> (items: [len(Ctx_Action)]Ctx_Item, box: rl.Rectangle) {
 	f := &g.font
-	if g.ctx.gen != g.idx.generation || g.ctx.file < 0 || g.ctx.file >= len(g.idx.files) {
+	if g.ctx.gen != g.idx.generation || g.ctx.file < 0 || g.ctx.file >= index_count(g.idx) {
 		g.ctx.open = false
 		return
 	}
-	rel := g.idx.files[g.ctx.file].rel
+	rel := index_file(g.idx, g.ctx.file).rel
 	name_e, path_e, type_e := ctx_targets(rel)
 	open_in := "Open In..."
 	labels := [Ctx_Action]string {
@@ -177,7 +177,7 @@ context_menu_draw :: proc() {
 
 @(private = "file")
 context_action :: proc(a: Ctx_Action) {
-	f := &g.idx.files[g.ctx.file]
+	f := index_file(g.idx, g.ctx.file)
 	name_e, path_e, type_e := ctx_targets(f.rel)
 	switch a {
 	case .Open_Default:
@@ -396,13 +396,10 @@ prompt_keys :: proc() {
 prompt_run :: proc(cmd: string) {
 	c := strings.trim_space(cmd)
 	if c == "" do return
-	if run_template(c, g.prompt.path, g.prompt.line) {
-		remember_open_with(&g.settings, c)
-		settings_save(&g.settings, g.settings_path)
-		set_status("opened %s with %s", g.prompt.rel, c)
-	} else {
-		set_error("could not run: %s", c)
-	}
+	launch_async(.Template, g.prompt.path, g.prompt.line, g.prompt.rel, c)
+	remember_open_with(&g.settings, c)
+	settings_save(&g.settings, g.settings_path)
+	set_status("opening %s with %s...", g.prompt.rel, c)
 	prompt_destroy()
 }
 

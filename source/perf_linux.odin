@@ -65,3 +65,17 @@ os_sample :: proc() -> (s: Os_Sample) {
 	}
 	return
 }
+
+// The machine's physical memory, for the index's default limit. 0 = unknown.
+os_total_memory :: proc() -> i64 {
+	si: linux.Sys_Info
+	if linux.sysinfo(&si) != .NONE do return 0
+	return i64(si.totalram) * i64(max(si.mem_unit, 1))
+}
+
+// Background threads step aside for the main thread: on a busy machine the
+// window keeps drawing. Linux threads are scheduled individually, so a "nice"
+// on this thread's id affects this thread alone.
+thread_lower_priority :: proc() {
+	linux.setpriority(.PROCESS, i32(linux.gettid()), 10)
+}

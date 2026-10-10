@@ -19,6 +19,8 @@ package fff
 
 import "core:fmt"
 import "core:strings"
+import "core:sync"
+import "fuzzy"
 import "ignore"
 import rl "vendor:raylib"
 
@@ -53,25 +55,22 @@ Viewer :: struct {
 	has:  bool,
 	gen:  int, // Index.generation of `file`
 	mode: Mode,
-	item: u32, // which result it is showing
-	file: int,
+	file: int, // the result it is showing: a file...
+	line: int, // ...and in content mode a line
 	hl:   int, // the matched line, 0-based, or -1
 	top:  int, // first line shown
 	left: int, // columns scrolled off the left
 }
 
 results_sync :: proc() {
-	n := g.search.top.n
+	n := results_count()
 	g.sel = clamp(g.sel, 0, max(0, n - 1))
-	// A view into an index that has been rebuilt, or one made in the other
-	// mode (its `item` indexes lines, not files, or the reverse), is stale.
-	if g.view.has && (g.view.gen != g.idx.generation || g.view.mode != g.search.mode) {
-		g.view = {file = -1}
-	}
+	// A view into an index that has been rebuilt is stale.
+	if g.view.has && (g.idx == nil || g.view.gen != g.idx.generation) do g.view = {file = -1}
 	if n == 0 do return
-	item := g.search.top.items[g.sel].item
-	if g.view.has && g.view.mode == g.search.mode && g.view.item == item && g.view.gen == g.idx.generation do return
-	viewer_show(g.search.mode, item)
+	r := g.res.items[g.sel]
+	if g.view.has && g.view.mode == g.res.mode && g.view.file == int(r.item) && g.view.line == int(r.line) do return
+	viewer_show(g.res.mode, int(r.item), int(r.line))
 }
 
 viewer_rows :: proc() -> int {
@@ -85,27 +84,25 @@ viewer_cols :: proc() -> int {
 	return max(1, int((l.viewer.width - gutter_width() - 2 * g.font.pad) / g.font.cw))
 }
 
-viewer_show :: proc(mode: Mode, item: u32) {
+viewer_show :: proc(mode: Mode, file: int, line: int) {
 	v := &g.view
 	v.has = true
 	v.gen = g.idx.generation
 	v.mode = mode
-	v.item = item
+	v.file = file
+	v.line = line
 	v.left = 0
 	switch mode {
 	case .Files:
-		v.file = int(item)
 		v.hl = -1
 		v.top = 0
 	case .Content:
-		ref := g.idx.lines[item]
-		v.file = int(ref.file)
-		v.hl = int(ref.line)
+		v.hl = line
 		// The matched line a third of the way down: context above, more below.
 		v.top = max(0, v.hl - viewer_rows() / 3)
 		// A match far to the right of a long line scrolls the view across to it.
 		pos: [64]int
-		text, prefix, np := match_positions(&g.search, &g.idx, item, pos[:])
+		text, prefix, np := match_positions(&g.pattern, g.idx, .Content, file, line, pos[:])
 		for i in 0 ..< np {
 			if pos[i] < prefix do continue
 			col := text_cols(text[prefix:pos[i]])
@@ -118,8 +115,10 @@ viewer_show :: proc(mode: Mode, item: u32) {
 }
 
 viewer_lines :: proc() -> int {
-	if !g.view.has || g.view.file < 0 || g.view.file >= len(g.idx.files) do return 0
-	return len(g.idx.files[g.view.file].lines)
+	if !g.view.has || g.idx == nil || g.view.file < 0 || g.view.file >= index_count(g.idx) do return 0
+	f := index_file(g.idx, g.view.file)
+	if file_state(f) != .Text do return 0
+	return len(f.lines)
 }
 
 viewer_clamp :: proc() {
@@ -165,18 +164,26 @@ viewer_draw :: proc(r: rl.Rectangle) {
 	focused := g.focus == .Viewer
 	hx := r.x + f.pad
 	hy := head.y + f.pad / 2
-	if !g.view.has || g.view.file < 0 || g.view.file >= len(g.idx.files) {
-		msg := index_done(&g.idx) ? "No match." : "Reading files..."
-		if len(g.idx.files) == 0 && index_done(&g.idx) do msg = "Nothing to search here."
+	if !g.view.has || g.idx == nil || g.view.file < 0 || g.view.file >= index_count(g.idx) {
+		msg := "No match."
+		if !index_done(g.idx) || searching() {
+			msg = "Reading files..."
+			if index_done(g.idx) do msg = "Searching..."
+			spinner_draw(hx + f.lh / 2, hy + f.lh / 2, f.lh * 0.35)
+			hx += f.lh * 1.2
+		} else if index_count(g.idx) == 0 {
+			msg = "Nothing to search here."
+		}
 		draw_text(msg, hx, hy, COL_DIM)
 		if focused do outline(r, COL_ACCENT, 2)
 		return
 	}
 
-	file := &g.idx.files[g.view.file]
+	file := index_file(g.idx, g.view.file)
+	state := file_state(file)
 	// Header: the path, and where in it we are.
 	right := ""
-	if file.state == .Text {
+	if state == .Text {
 		line := g.view.hl >= 0 ? g.view.hl + 1 : g.view.top + 1
 		right = fmt.tprintf("line %v of %v", line, len(file.lines))
 		if g.view.left > 0 do right = fmt.tprintf("%s, col %v", right, g.view.left + 1)
@@ -189,7 +196,7 @@ viewer_draw :: proc(r: rl.Rectangle) {
 	gw := gutter_width()
 	fill({body.x, body.y, gw, body.height}, COL_GUTTER)
 
-	switch file.state {
+	switch state {
 	case .Text:
 	case .Pending:
 		draw_text("Reading...", body.x + gw + f.pad, body.y + f.pad, COL_DIM)
@@ -199,9 +206,11 @@ viewer_draw :: proc(r: rl.Rectangle) {
 		draw_text(fmt.tprintf("Larger than %v KB (max_file_kb in settings.txt) - not read.", g.settings.max_file_kb), body.x + gw + f.pad, body.y + f.pad, COL_DIM)
 	case .Unreadable:
 		draw_text("Could not be read.", body.x + gw + f.pad, body.y + f.pad, COL_BAD)
+	case .Over_Limit:
+		draw_text("Not read: the index is at its memory limit (max_index_mb in settings.txt).", body.x + gw + f.pad, body.y + f.pad, COL_BAD)
 	}
 
-	if file.state == .Text {
+	if state == .Text {
 		rows := int(body.height / f.lh)
 		cols := int((body.width - gw - 2 * f.pad) / f.cw)
 		tx := body.x + gw + f.pad
@@ -209,8 +218,8 @@ viewer_draw :: proc(r: rl.Rectangle) {
 		hl_pos: [fuzzy_positions]int
 		hl_n := 0
 		hl_base := 0
-		if g.view.hl >= 0 && g.view.mode == .Content && g.search.mode == .Content {
-			_, prefix, n := match_positions(&g.search, &g.idx, g.view.item, hl_pos[:])
+		if g.view.hl >= 0 && g.view.mode == .Content {
+			_, prefix, n := match_positions(&g.pattern, g.idx, .Content, g.view.file, g.view.hl, hl_pos[:])
 			hl_n = n
 			hl_base = prefix
 			// Positions inside the path prefix are not on this line.
@@ -267,7 +276,7 @@ results_draw :: proc(r: rl.Rectangle) {
 	fill(r, COL_PANEL)
 	fill({r.x, r.y, r.width, 1}, COL_RULE)
 	rows := max(1, int((r.height - 2 * f.pad) / f.lh))
-	n := g.search.top.n
+	n := results_count()
 
 	if w := ui_take_wheel(r); w != 0 && n > 0 do g.sel = clamp(g.sel - int(w), 0, n - 1)
 
@@ -289,7 +298,7 @@ results_draw :: proc(r: rl.Rectangle) {
 		} else if hovered(rr) {
 			fill(rr, COL_PANEL_HI)
 		}
-		item := g.search.top.items[i].item
+		item := g.res.items[i]
 		tx := r.x + f.pad + f.cw
 		// Which part of the path the mouse is over - a folder, the name, the
 		// extension - picks what the right-click menu offers to exclude.
@@ -329,7 +338,7 @@ results_draw :: proc(r: rl.Rectangle) {
 		ty := track.y + (track.height - th) * f32(first) / f32(max(1, n - rows))
 		fill({track.x + 1, ty, 4, th}, COL_EDGE)
 	}
-	if n == 0 && len(g.query) > 0 && !search_busy(&g.search, &g.idx) {
+	if n == 0 && len(g.query) > 0 && !searching() {
 		draw_text("No matches.", r.x + f.pad + f.cw, r.y + f.pad, COL_DIM)
 	}
 }
@@ -345,14 +354,8 @@ results_first :: proc(rows: int) -> int {
 }
 
 // The path of a result's file.
-result_rel :: proc(item: u32) -> string {
-	switch g.search.mode {
-	case .Files:
-		return g.idx.files[item].rel
-	case .Content:
-		return g.idx.files[g.idx.lines[item].file].rel
-	}
-	return ""
+result_rel :: proc(r: fuzzy.Ranked) -> string {
+	return index_file(g.idx, int(r.item)).rel
 }
 
 Path_Part :: enum u8 {
@@ -416,20 +419,19 @@ path_part_at :: proc(rel: string, x0, mx: f32) -> Path_Hover {
 }
 
 // One result: path, line number, text - the matched characters marked.
-result_row_draw :: proc(item: u32, x, y: f32, cols: int) {
+result_row_draw :: proc(r: fuzzy.Ranked, x, y: f32, cols: int) {
 	pos: [fuzzy_positions]int
-	text, prefix, np := match_positions(&g.search, &g.idx, item, pos[:])
+	text, prefix, np := match_positions(&g.pattern, g.idx, g.res.mode, int(r.item), int(r.line), pos[:])
 	hl := pos[:np]
 	f := &g.font
-	switch g.search.mode {
+	switch g.res.mode {
 	case .Files:
 		draw_text(text, x, y, COL_PATH, cols, 0, hl)
 	case .Content:
-		ref := g.idx.lines[item]
-		file := &g.idx.files[ref.file]
+		file := index_file(g.idx, int(r.item))
 		pl := min(len(file.rel), len(text)) // the candidate may have been cut short
 		c := draw_text(text[:pl], x, y, COL_PATH, cols, 0, hl)
-		num := fmt.tprintf(":%v: ", ref.line + 1)
+		num := fmt.tprintf(":%v: ", r.line + 1)
 		c += draw_text(num, x + f32(c) * f.cw, y, COL_NUM, cols - c)
 		// The line without its indentation: the indentation is noise here,
 		// and the viewer shows it in place.
@@ -449,6 +451,11 @@ search_bar_draw :: proc(r: rl.Rectangle) {
 	y := r.y + f.pad
 	x := r.x + f.pad
 
+	// Something still going on in the background: a spinner before the prompt.
+	if app_busy() {
+		spinner_draw(x + f.lh * 0.4, y + f.lh / 2, f.lh * 0.32)
+		x += f.lh
+	}
 	prompt := fmt.tprintf("%s > ", MODE_NAME[g.mode])
 	x += f32(draw_text(prompt, x, y, focused ? COL_ACCENT : COL_DIM)) * f.cw
 
@@ -459,20 +466,26 @@ search_bar_draw :: proc(r: rl.Rectangle) {
 		right = status_text()
 		right_col = g.status_bad ? COL_BAD : COL_GOOD
 	} else {
-		total := search_items(&g.idx, g.mode)
-		right = fmt.tprintf("%s / %s", thousands(g.search.matched), thousands(total))
+		files := index_count(g.idx)
+		total := g.mode == .Content ? sync.atomic_load(&g.idx.lines) : files
+		matched := g.res.gen == g.idx.generation ? g.res.matched : 0
+		right = fmt.tprintf("%s / %s", thousands(matched), thousands(total))
 		// Which page of the kept results is showing, once there is more than one.
-		if kept := g.search.top.n; kept > results_rows() {
+		if kept := results_count(); kept > results_rows() {
 			first := results_first(results_rows())
 			page := fmt.tprintf("%v-%v of %s", first + 1, min(first + results_rows(), kept), thousands(kept))
-			if g.search.matched > kept do page = fmt.tprintf("%s best", page)
+			if matched > kept do page = fmt.tprintf("%s best", page)
 			right = fmt.tprintf("%s   %s", page, right)
 		}
-		if g.mode == .Content do right = fmt.tprintf("%s   %s files", right, thousands(len(g.idx.files)))
-		if !index_done(&g.idx) {
-			right = fmt.tprintf("%s   reading %v%%", right, int(index_progress(&g.idx) * 100))
-		} else if search_busy(&g.search, &g.idx) {
+		if g.mode == .Content do right = fmt.tprintf("%s   %s files", right, thousands(files))
+		if !index_done(g.idx) {
+			right = fmt.tprintf("%s   reading %v%%", right, int(index_progress(g.idx) * 100))
+		} else if searching() {
 			right = fmt.tprintf("%s   searching", right)
+		}
+		if over := sync.atomic_load(&g.idx.over_limit); over > 0 {
+			right = fmt.tprintf("%s   %s not read (memory limit)", right, thousands(over))
+			right_col = COL_BAD
 		}
 	}
 	right = fit(right, int(r.width / f.cw / 2))

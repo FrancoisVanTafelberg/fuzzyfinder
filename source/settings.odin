@@ -37,6 +37,9 @@ Settings :: struct {
 	max_results:      i32, // how many results are kept to page through
 	max_fps:          i32,
 	max_file_kb:      i32,
+	// The most text the index holds, in MB; 0 = half the machine's memory.
+	// Past it, files are still listed but not read.
+	max_index_mb:     i32,
 	show_metrics:     bool, // the performance panel (F3)
 	// What Enter runs. "" asks the system for the file's default app and, if
 	// that is an editor fff knows, passes it the line. Otherwise a command
@@ -140,6 +143,7 @@ settings_load :: proc(s: ^Settings, path: string) -> (first_run: bool) {
 	get_int(obj, "max_results", &s.max_results)
 	get_int(obj, "max_fps", &s.max_fps)
 	get_int(obj, "max_file_kb", &s.max_file_kb)
+	get_int(obj, "max_index_mb", &s.max_index_mb)
 	if ed, ok := get_str(obj, "editor"); ok do s.editor = strings.clone(ed)
 	if v, ok := obj["show_metrics"]; ok {
 		if b, is := v.(json.Boolean); is do s.show_metrics = bool(b)
@@ -170,6 +174,7 @@ settings_load :: proc(s: ^Settings, path: string) -> (first_run: bool) {
 	s.max_results = clamp(s.max_results, MAX_RESULTS_MIN, MAX_RESULTS_MAX)
 	s.max_fps = clamp(s.max_fps, 0, 1000)
 	s.max_file_kb = clamp(s.max_file_kb, 16, 1024 * 1024)
+	s.max_index_mb = max(s.max_index_mb, 0)
 	return
 }
 
@@ -219,6 +224,8 @@ settings_save :: proc(s: ^Settings, path: string) {
 	fmt.sbprintln(&b, "")
 	fmt.sbprintln(&b, "// search - files larger than this (in KB) are listed but not read")
 	w(&b, "max_file_kb", fmt.tprint(s.max_file_kb))
+	fmt.sbprintln(&b, "// the most file text kept in memory, in MB; 0 = half of this machine's memory")
+	w(&b, "max_index_mb", fmt.tprint(s.max_index_mb))
 	fmt.sbprintln(&b, "")
 	fmt.sbprintln(&b, "// what Enter opens the file with. \"\" = the system's default app for the file;")
 	fmt.sbprintln(&b, "// otherwise a command, where {file} and {line} are filled in, e.g.")

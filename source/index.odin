@@ -4,28 +4,48 @@ package fff
     The index: every file under the root, and every non-empty line of every
     text file, held in memory so a keystroke can be answered from RAM.
 
-    This replaces `rg --files` (files mode) and `rg -n '.'` (content mode) in
-    the old ff. Like rg with '.', a line is a search item if it has at least
-    one character; blank lines are skipped.
+    BUILT ON BACKGROUND THREADS, and the window never waits for them.
 
-    BUILT INCREMENTALLY, A SLICE OF EVERY FRAME. Opening fff in a big tree
-    shows a window at once and results as they arrive, rather than a frozen
-    window for however long the disk takes. Walking is cheap and done on the
-    main thread; reading is the slow part and is spread over the cores (see
-    parallel.odin for why those threads never outlive the frame).
+        walker      one thread. Lists folders breadth-first (the files nearest
+                    the root are found first) and publishes each file it finds.
+        readers     several threads. Each claims the next published file,
+                    reads it, works out where its lines start and which are
+                    worth searching, and marks it done.
 
-    WHAT IS LEFT OUT: anything the ignore panel names (checked during the walk,
-    so an ignored node_modules is never even listed), symbolic links (they
-    can loop), files over `max_file_kb`, and files that look binary - a NUL
-    byte in the first 8000 bytes, which is git's own test. Binary and
-    too-big files are still FILES: they appear in files mode, and the viewer
+    The main thread only ever LOOKS: how many files are published, which are
+    done. A file that takes ten seconds to read - a cloud placeholder being
+    downloaded, a network drive, a virus scanner holding a big file - costs
+    one reader those ten seconds and nothing else. That is the fix for the
+    freezes measured on 10 October (.design/performance_improvements.md).
+
+    STORAGE THAT NEVER MOVES. Files live in fixed blocks of FILE_CHUNK, and a
+    block once allocated stays where it is. So the main thread and the search
+    can read file i while the walker is still adding file i + 1000, with no
+    lock: the walker fills a File in, then publishes it by bumping `count`,
+    and a reader fills in the contents, then publishes them by setting
+    `state`. Everyone else reads `count` and `state` first.
+
+    EACH FILE KEEPS ITS OWN LIST of searchable lines (`items`), built by the
+    reader that loaded it. There is no index-wide line list any more - that
+    list, and the copies of it every time it grew, were one of the stalls.
+
+    WHAT IS LEFT OUT: anything the ignore panel names (folders are not even
+    entered), symbolic links (they can loop), files over `max_file_kb`, files
+    that look binary (a NUL in the first 8000 bytes - git's test), and once
+    the index holds `max_index_mb` of text, the contents of any more files.
+    Left-out files are still FILES: they appear in files mode, and the viewer
     says why it cannot show them.
+
+    REBUILDING is a new Index. The old one is told to stop and is freed once
+    its threads have finished - a reader stuck on a slow file finishes in its
+    own time, and nothing waits for it (app.odin, index_retire).
 */
 
 import "core:os"
 import "core:slice"
 import "core:strings"
 import "core:sync"
+import "core:thread"
 import "core:time"
 import "ignore"
 
@@ -35,6 +55,7 @@ File_State :: enum u8 {
 	Binary,
 	Too_Big,
 	Unreadable,
+	Over_Limit, // the index already holds max_index_mb of text
 }
 
 File :: struct {
@@ -42,144 +63,183 @@ File :: struct {
 	size:   i64,
 	data:   []u8, // owned; only while .Text
 	lines:  []u32, // owned; byte offset where each line starts
-	state:  File_State,
-	hidden: bool, // ruled out by an ignore rule added after it was indexed
+	items:  []u32, // owned; the non-empty lines - what content mode searches
+	state:  File_State, // written once, last, by the reader: read it with file_state
+	hidden: bool, // ruled out by an ignore rule; the main thread writes it
 }
 
-// One searchable line: which file, which line (0-based).
-Line_Ref :: struct {
-	file: u32,
-	line: u32,
-}
+FILE_CHUNK :: 4096
+MAX_CHUNKS :: 16384 // 64M files
+
+// The walker is slot 0 of the per-thread tables; readers are 1 ..= readers.
+MAX_INDEX_THREADS :: MAX_WORKERS + 1
 
 Index :: struct {
-	files:          [dynamic]File,
-	lines:          [dynamic]Line_Ref,
-	// Folders still to walk, as paths relative to the root ("" is the root).
-	// A queue that is read from the front and only ever appended to, so the
-	// walk is breadth-first: the files nearest the root are found first.
-	dirs:           [dynamic]string,
-	dir_next:       int,
-	loaded:         int, // files[:loaded] have been read (or given up on)
-	text_bytes:     i64,
-	// Bumped on every rebuild. The search compares it to know its results
-	// point into an index that no longer exists.
+	root:           string, // owned
 	generation:     int,
 	max_file_bytes: i64,
+	max_text_bytes: i64, // 0 = no limit
+	walk_rules:     [2]ignore.Rules, // owned copies, for the walker alone
+
+	chunks:         [MAX_CHUNKS]^[FILE_CHUNK]File,
+	count:          int, // atomic: files published by the walker
+	next_read:      int, // atomic: the next file a reader claims
+	loaded:         int, // atomic: files read (whatever came of it)
+	lines:          int, // atomic: searchable lines, over all loaded files
+	text_bytes:     i64, // atomic: text held
+	read_bytes:     i64, // atomic: bytes read from disk, text or not
+	dirs:           int, // atomic: folders listed
+	over_limit:     int, // atomic: files not read because of max_index_mb
+
+	walking:        bool, // atomic
+	readers_live:   int, // atomic
+	stop:           bool, // atomic
+
+	readers:        int,
+	threads:        [MAX_INDEX_THREADS]^thread.Thread,
+
+	// For the metrics panel and the watchdog, per thread slot: time spent
+	// working (ns, atomic), and what it is working on now - a file index for
+	// readers (-1 = waiting) and since when (tick ns).
+	busy_ns:        [MAX_INDEX_THREADS]i64,
+	current:        [MAX_INDEX_THREADS]int,
+	since:          [MAX_INDEX_THREADS]i64,
+	// The folder the walker is in, for the watchdog. Guarded by walk_mu.
+	walk_mu:        sync.Mutex,
+	walk_dir:       [512]u8,
+	walk_dir_len:   int,
 }
 
 BINARY_SNIFF :: 8000
 
-index_destroy :: proc(idx: ^Index) {
-	for &f in idx.files {
+// Start building an index of `root` on background threads.
+index_start :: proc(root: string, generation: int, max_file_bytes, max_text_bytes: i64, lists: []^ignore.Rules, readers: int) -> ^Index {
+	idx := new(Index)
+	idx.root = strings.clone(root)
+	idx.generation = generation
+	idx.max_file_bytes = max_file_bytes
+	idx.max_text_bytes = max_text_bytes
+	for l, i in lists do if i < len(idx.walk_rules) do idx.walk_rules[i] = ignore.clone(l)
+	idx.readers = clamp(readers, 1, MAX_WORKERS)
+	for i in 0 ..< MAX_INDEX_THREADS do idx.current[i] = -1
+
+	sync.atomic_store(&idx.walking, true)
+	sync.atomic_store(&idx.readers_live, idx.readers)
+	idx.threads[0] = thread.create_and_start_with_poly_data(idx, walker_thread)
+	for r in 1 ..= idx.readers {
+		idx.threads[r] = thread.create_and_start_with_poly_data2(idx, r, reader_thread)
+	}
+	return idx
+}
+
+// Ask the threads to finish. Returns at once.
+index_stop :: proc(idx: ^Index) {
+	sync.atomic_store(&idx.stop, true)
+}
+
+// Have all of its threads finished? Then index_free can run without waiting.
+index_threads_done :: proc(idx: ^Index) -> bool {
+	return !sync.atomic_load(&idx.walking) && sync.atomic_load(&idx.readers_live) == 0
+}
+
+// Join the (finished) threads and free everything.
+index_free :: proc(idx: ^Index) {
+	for t in idx.threads do if t != nil {
+		thread.join(t)
+		thread.destroy(t)
+	}
+	n := sync.atomic_load(&idx.count)
+	for i in 0 ..< n {
+		f := index_file(idx, i)
 		delete(f.rel)
 		delete(f.data)
 		delete(f.lines)
+		delete(f.items)
 	}
-	for d in idx.dirs do delete(d)
-	delete(idx.files)
-	delete(idx.lines)
-	delete(idx.dirs)
-	gen := idx.generation
-	idx^ = {}
-	idx.generation = gen
+	for c in idx.chunks do if c != nil do free(c)
+	for &r in idx.walk_rules do ignore.destroy(&r)
+	delete(idx.root)
+	free(idx)
 }
 
-// Throw everything away and start walking from the root again.
-index_restart :: proc(idx: ^Index, max_file_bytes: i64) {
-	index_destroy(idx)
-	idx.generation += 1
-	idx.max_file_bytes = max_file_bytes
-	append(&idx.dirs, strings.clone(""))
+index_count :: #force_inline proc "contextless" (idx: ^Index) -> int {
+	return sync.atomic_load(&idx.count)
+}
+
+index_file :: #force_inline proc "contextless" (idx: ^Index, i: int) -> ^File {
+	return &idx.chunks[i / FILE_CHUNK][i % FILE_CHUNK]
+}
+
+file_state :: #force_inline proc "contextless" (f: ^File) -> File_State {
+	return sync.atomic_load(&f.state)
+}
+
+file_hidden :: #force_inline proc "contextless" (f: ^File) -> bool {
+	return sync.atomic_load(&f.hidden)
 }
 
 index_walking :: proc(idx: ^Index) -> bool {
-	return idx.dir_next < len(idx.dirs)
+	return sync.atomic_load(&idx.walking)
 }
 
+// Everything found has been read, and nothing more will be found.
 index_done :: proc(idx: ^Index) -> bool {
-	return !index_walking(idx) && idx.loaded == len(idx.files)
+	if idx == nil do return true
+	walking := sync.atomic_load(&idx.walking)
+	return !walking && sync.atomic_load(&idx.loaded) >= sync.atomic_load(&idx.count)
 }
 
-// The text of one line, without its line ending.
+index_progress :: proc(idx: ^Index) -> f32 {
+	n := index_count(idx)
+	if n == 0 do return index_walking(idx) ? 0 : 1
+	return f32(sync.atomic_load(&idx.loaded)) / f32(n)
+}
+
+// The text of one line, without its line ending. Only for a .Text file.
 line_text :: proc(f: ^File, line: int) -> string {
-	if f.state != .Text || line < 0 || line >= len(f.lines) do return ""
+	if line < 0 || line >= len(f.lines) do return ""
 	start := int(f.lines[line])
 	end := line + 1 < len(f.lines) ? int(f.lines[line + 1]) : len(f.data)
 	for end > start && (f.data[end - 1] == '\n' || f.data[end - 1] == '\r') do end -= 1
 	return string(f.data[start:end])
 }
 
-// Do up to `budget` of indexing work. Returns true if anything changed.
-// `stats`, if given, is added to (the metrics panel; see perf.odin).
-index_step :: proc(idx: ^Index, root: string, lists: []^ignore.Rules, budget: time.Duration, stats: ^Work_Stats = nil) -> bool {
-	start := time.tick_now()
-	changed := false
-	dirs_before := idx.dir_next
+// ---------------------------------------------------------------------------
+// The walker
+// ---------------------------------------------------------------------------
 
-	// --- walk: a few folders at a time ---------------------------------
-	walk_budget := budget / 3
-	for idx.dir_next < len(idx.dirs) && time.tick_since(start) < walk_budget {
-		rel := idx.dirs[idx.dir_next]
-		idx.dir_next += 1
-		walk_one(idx, root, rel, lists)
-		changed = true
+@(private = "file")
+walker_thread :: proc(idx: ^Index) {
+	defer sync.atomic_store(&idx.walking, false)
+	thread_lower_priority()
+	lists := [2]^ignore.Rules{&idx.walk_rules[0], &idx.walk_rules[1]}
+	queue: [dynamic]string
+	defer {
+		for d in queue do delete(d)
+		delete(queue)
 	}
-	if stats != nil {
-		stats.walk += time.tick_since(start)
-		stats.dirs += i64(idx.dir_next - dirs_before)
-	}
+	append(&queue, strings.clone(""))
+	next := 0
+	for next < len(queue) && !sync.atomic_load(&idx.stop) {
+		rel := queue[next]
+		next += 1
+		start := time.tick_now()
+		sync.atomic_store(&idx.since[0], i64(start._nsec))
+		sync.lock(&idx.walk_mu)
+		idx.walk_dir_len = copy(idx.walk_dir[:], rel == "" ? "." : rel)
+		sync.unlock(&idx.walk_mu)
 
-	// --- read: the files found so far, over every core -----------------
-	if idx.loaded < len(idx.files) {
-		left := budget - time.tick_since(start)
-		if left < time.Millisecond do left = time.Millisecond
-		job := Load_Job {
-			idx      = idx,
-			root     = root,
-			next     = idx.loaded,
-			end      = min(len(idx.files), idx.loaded + 8192),
-			started  = time.tick_now(),
-			budget   = left,
-		}
-		n := min(worker_count(), max(1, (job.end - job.next) / 4))
-		read_start := time.tick_now()
-		parallel(n, &job, load_worker, stats != nil ? &stats.busy : nil)
-		lines_start := time.tick_now()
-		done := min(sync.atomic_load(&job.next), job.end)
-		for i in idx.loaded ..< done {
-			f := &idx.files[i]
-			if stats != nil && (f.state == .Text || f.state == .Binary) {
-				stats.files += 1
-				stats.bytes += f.size
-			}
-			if f.state != .Text do continue
-			idx.text_bytes += i64(len(f.data))
-			for l in 0 ..< len(f.lines) {
-				if len(line_text(f, l)) > 0 do append(&idx.lines, Line_Ref{u32(i), u32(l)})
-			}
-		}
-		if done > idx.loaded do changed = true
-		idx.loaded = done
-		if stats != nil {
-			stats.read += time.tick_diff(read_start, lines_start)
-			stats.lines += time.tick_since(lines_start)
-			stats.slots = max(stats.slots, n)
-		}
+		walk_one(idx, rel, lists[:], &queue)
+		sync.atomic_add(&idx.dirs, 1)
+		sync.atomic_add(&idx.busy_ns[0], i64(time.tick_since(start)))
+		free_all(context.temp_allocator)
 	}
-
-	// The walk queue's strings are no longer needed once it is finished.
-	if !index_walking(idx) && len(idx.dirs) > 0 {
-		for d in idx.dirs do delete(d)
-		clear(&idx.dirs)
-		idx.dir_next = 0
-	}
-	return changed
+	sync.atomic_store(&idx.since[0], 0)
 }
 
 @(private = "file")
-walk_one :: proc(idx: ^Index, root: string, rel: string, lists: []^ignore.Rules) {
-	abs := rel == "" ? root : strings.concatenate({root, "/", rel}, context.temp_allocator)
+walk_one :: proc(idx: ^Index, rel: string, lists: []^ignore.Rules, queue: ^[dynamic]string) {
+	abs := rel == "" ? idx.root : strings.concatenate({idx.root, "/", rel}, context.temp_allocator)
 	entries, err := os.read_all_directory_by_path(abs, context.temp_allocator)
 	if err != nil do return
 	// Sorted, so the same tree always lists in the same order.
@@ -191,58 +251,93 @@ walk_one :: proc(idx: ^Index, root: string, rel: string, lists: []^ignore.Rules)
 		#partial switch e.type {
 		case .Directory:
 			if ignore.folder_ignored(lists, child) do continue
-			append(&idx.dirs, strings.clone(child))
+			append(queue, strings.clone(child))
 		case .Regular:
 			if ignore.type_ignored(lists, child) do continue
-			append(&idx.files, File{rel = strings.clone(child), size = e.size})
+			publish_file(idx, child, e.size)
 		}
 	}
 }
 
+// Only the walker calls this: fill the File in, then make it visible.
 @(private = "file")
-Load_Job :: struct {
-	idx:     ^Index,
-	root:    string,
-	next:    int, // atomic: the next file to claim
-	end:     int,
-	started: time.Tick,
-	budget:  time.Duration,
+publish_file :: proc(idx: ^Index, rel: string, size: i64) {
+	i := idx.count // only this thread writes it
+	if i >= MAX_CHUNKS * FILE_CHUNK do return
+	c := i / FILE_CHUNK
+	if idx.chunks[c] == nil do idx.chunks[c] = new([FILE_CHUNK]File)
+	idx.chunks[c][i % FILE_CHUNK] = File {
+		rel  = strings.clone(rel),
+		size = size,
+	}
+	sync.atomic_store(&idx.count, i + 1)
 }
 
-// Claim files one at a time until the batch or the time runs out. A claimed
-// file is always finished, so after the join every index below `next` is done.
+// ---------------------------------------------------------------------------
+// The readers
+// ---------------------------------------------------------------------------
+
 @(private = "file")
-load_worker :: proc(data: rawptr, worker: int) {
-	job := (^Load_Job)(data)
-	for time.tick_since(job.started) < job.budget {
-		i := sync.atomic_add(&job.next, 1)
-		if i >= job.end do break
-		load_file(&job.idx.files[i], job.root, job.idx.max_file_bytes)
+reader_thread :: proc(idx: ^Index, slot: int) {
+	defer sync.atomic_sub(&idx.readers_live, 1)
+	thread_lower_priority()
+	path_buf: [dynamic]u8
+	defer delete(path_buf)
+	for !sync.atomic_load(&idx.stop) {
+		i := sync.atomic_add(&idx.next_read, 1)
+		// Wait for the walker to get that far - or to finish without doing so.
+		for i >= index_count(idx) {
+			if !sync.atomic_load(&idx.walking) && i >= index_count(idx) do return
+			if sync.atomic_load(&idx.stop) do return
+			time.sleep(time.Millisecond)
+		}
+		f := index_file(idx, i)
+		start := time.tick_now()
+		sync.atomic_store(&idx.since[slot], i64(start._nsec))
+		sync.atomic_store(&idx.current[slot], i)
+
+		load_file(idx, f, &path_buf)
+
+		took := time.tick_since(start)
+		sync.atomic_store(&idx.current[slot], -1)
+		sync.atomic_add(&idx.busy_ns[slot], i64(took))
+		sync.atomic_add(&idx.loaded, 1)
+		if took > SLOW_READ do log_line("slow read: %v for %s (%v KB)", took, f.rel, f.size / 1024)
 	}
 }
 
+// A file read slower than this is written to fff.log.
+SLOW_READ :: time.Second
+
 @(private = "file")
-load_file :: proc(f: ^File, root: string, max_bytes: i64) {
-	if f.size > max_bytes {
-		f.state = .Too_Big
+load_file :: proc(idx: ^Index, f: ^File, path_buf: ^[dynamic]u8) {
+	if f.size > idx.max_file_bytes {
+		sync.atomic_store(&f.state, File_State.Too_Big)
 		return
 	}
-	path := strings.concatenate({root, "/", f.rel}, context.allocator)
-	defer delete(path)
-	data, err := os.read_entire_file_from_path(path, context.allocator)
+	if idx.max_text_bytes > 0 && sync.atomic_load(&idx.text_bytes) + f.size > idx.max_text_bytes {
+		sync.atomic_add(&idx.over_limit, 1)
+		sync.atomic_store(&f.state, File_State.Over_Limit)
+		return
+	}
+	clear(path_buf)
+	append(path_buf, idx.root)
+	append(path_buf, "/")
+	append(path_buf, f.rel)
+	data, err := os.read_entire_file_from_path(string(path_buf[:]), context.allocator)
 	if err != nil {
-		f.state = .Unreadable
+		sync.atomic_store(&f.state, File_State.Unreadable)
 		return
 	}
-	if i64(len(data)) > max_bytes {
+	sync.atomic_add(&idx.read_bytes, i64(len(data)))
+	if i64(len(data)) > idx.max_file_bytes {
 		delete(data)
-		f.state = .Too_Big
+		sync.atomic_store(&f.state, File_State.Too_Big)
 		return
 	}
-	sniff := data[:min(len(data), BINARY_SNIFF)]
-	if slice.contains(sniff, 0) {
+	if slice.contains(data[:min(len(data), BINARY_SNIFF)], 0) {
 		delete(data)
-		f.state = .Binary
+		sync.atomic_store(&f.state, File_State.Binary)
 		return
 	}
 
@@ -250,10 +345,13 @@ load_file :: proc(f: ^File, root: string, max_bytes: i64) {
 	first := 0
 	if len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF do first = 3
 
-	n := 1
-	for c, i in data do if c == '\n' && i + 1 < len(data) do n += 1
-	lines := make([]u32, len(data) > first ? n : 0)
-	if len(lines) > 0 {
+	n := 0
+	if len(data) > first {
+		n = 1
+		for c, i in data do if c == '\n' && i + 1 < len(data) do n += 1
+	}
+	lines := make([]u32, n)
+	if n > 0 {
 		lines[0] = u32(first)
 		k := 1
 		for c, i in data {
@@ -263,18 +361,59 @@ load_file :: proc(f: ^File, root: string, max_bytes: i64) {
 			}
 		}
 	}
+	// The lines with something on them: a line is searched if it has at
+	// least one character, as with rg '.'. Counted, then listed.
+	has_text :: #force_inline proc(data: []u8, lines: []u32, l: int) -> bool {
+		s := int(lines[l])
+		e := l + 1 < len(lines) ? int(lines[l + 1]) : len(data)
+		for e > s && (data[e - 1] == '\n' || data[e - 1] == '\r') do e -= 1
+		return e > s
+	}
+	nonempty := 0
+	for l in 0 ..< n do if has_text(data, lines, l) do nonempty += 1
+	items := make([]u32, nonempty)
+	k := 0
+	for l in 0 ..< n do if has_text(data, lines, l) {
+		items[k] = u32(l)
+		k += 1
+	}
+
 	f.data = data
 	f.lines = lines
-	f.state = .Text
+	f.items = items
+	sync.atomic_add(&idx.text_bytes, i64(len(data)))
+	sync.atomic_add(&idx.lines, nonempty)
+	sync.atomic_store(&f.state, File_State.Text) // publishes everything above
 }
 
-// Hide what a newly added rule rules out, without walking again.
-index_apply_rules :: proc(idx: ^Index, lists: []^ignore.Rules) {
-	for &f in idx.files do f.hidden = ignore.file_ignored(lists, f.rel)
+// ---------------------------------------------------------------------------
+// Rules added after the walk started
+// ---------------------------------------------------------------------------
+
+// Mark files ruled out by the current lists, from file `from` on. Returns the
+// count it has got to, and whether any file was newly hidden. The main thread
+// calls this every frame for newly published files (the walker works from a
+// copy of the rules taken when it started), and from 0 when a rule is added.
+index_apply_rules :: proc(idx: ^Index, lists: []^ignore.Rules, from: int) -> (upto: int, hid_any: bool) {
+	n := index_count(idx)
+	for i in from ..< n {
+		f := index_file(idx, i)
+		h := ignore.file_ignored(lists, f.rel)
+		if h != file_hidden(f) {
+			sync.atomic_store(&f.hidden, h)
+			if h do hid_any = true
+		}
+	}
+	return n, hid_any
 }
 
-// Where the index has got to, for the status line.
-index_progress :: proc(idx: ^Index) -> f32 {
-	if len(idx.files) == 0 do return index_walking(idx) ? 0 : 1
-	return f32(idx.loaded) / f32(len(idx.files))
+// Roughly what the index holds: the text, the two line tables (line starts
+// and searchable lines, a u32 each - counted from the searchable lines, as
+// counting the starts exactly would mean touching every file), the blocks.
+index_memory :: proc(idx: ^Index) -> i64 {
+	if idx == nil do return 0
+	total := sync.atomic_load(&idx.text_bytes)
+	total += i64(sync.atomic_load(&idx.lines)) * 2 * size_of(u32)
+	for c in idx.chunks do if c != nil do total += size_of([FILE_CHUNK]File)
+	return total
 }

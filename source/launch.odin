@@ -24,6 +24,8 @@ package fff
 
 import "core:fmt"
 import "core:strings"
+import "core:sync"
+import "core:thread"
 
 Editor_Kind :: enum u8 {
 	Unknown,
@@ -103,30 +105,90 @@ expand_template :: proc(tmpl: string, path: string, line: int) -> string {
 	return out
 }
 
+// ---------------------------------------------------------------------------
+// Launching, off the main thread
+// ---------------------------------------------------------------------------
+//
+// Starting another program can take a while - ShellExecute talking to a
+// shell extension, a command given time to fail (launch_windows.odin), the
+// xdg-mime lookups on Linux - so each launch runs on a thread of its own,
+// which reports back through post_status and ends.
+
+Launch_Kind :: enum u8 {
+	At_Line, // Enter: the default app, at the line for known editors
+	Default, // "Open In System Default"
+	With_Dialog, // "Open In..." on Windows
+	Template, // a command: the `editor` setting, or "Open In..." on Linux
+}
+
+@(private = "file")
+Launch :: struct {
+	kind:     Launch_Kind,
+	path:     string, // owned, like everything here
+	rel:      string,
+	template: string,
+	line:     int,
+}
+
+launch_async :: proc(kind: Launch_Kind, path: string, line: int, rel: string, template := "") {
+	l := new(Launch)
+	l^ = {
+		kind     = kind,
+		path     = strings.clone(path),
+		rel      = strings.clone(rel),
+		template = strings.clone(template),
+		line     = line,
+	}
+	sync.atomic_add(&g.launches, 1)
+	thread.create_and_start_with_poly_data(l, launch_thread, self_cleanup = true)
+}
+
+@(private = "file")
+launch_thread :: proc(l: ^Launch) {
+	defer {
+		delete(l.path)
+		delete(l.rel)
+		delete(l.template)
+		free(l)
+		sync.atomic_sub(&g.launches, 1)
+		free_all(context.temp_allocator)
+	}
+	platform_init() // per thread: Windows wants COM on whichever thread calls ShellExecute
+	switch l.kind {
+	case .At_Line:
+		if platform_open_at_line(l.path, l.line) do post_status(false, "opened %s:%v", l.rel, l.line)
+		else do post_status(true, "could not open %s", l.rel)
+	case .Default:
+		if platform_open_default(l.path) do post_status(false, "opened %s", l.rel)
+		else do post_status(true, "could not open %s", l.rel)
+	case .With_Dialog:
+		if !platform_open_with_dialog(l.path) do post_status(true, "could not show the Open With dialog")
+	case .Template:
+		if run_template(l.template, l.path, l.line) do post_status(false, "opened %s:%v", l.rel, l.line)
+		else do post_status(true, "could not run: %s", l.template)
+	}
+}
+
 // Enter.
 open_at_line :: proc(path: string, line: int, rel: string) {
 	if g.settings.editor != "" {
-		if run_template(g.settings.editor, path, line) {
-			set_status("opened %s:%v", rel, line)
-		} else {
-			set_error("could not run the editor command in settings.txt")
-		}
-		return
+		launch_async(.Template, path, line, rel, g.settings.editor)
+	} else {
+		launch_async(.At_Line, path, line, rel)
 	}
-	if platform_open_at_line(path, line) do set_status("opened %s:%v", rel, line)
-	else do set_error("could not open %s", rel)
+	set_status("opening %s...", rel)
 }
 
 // "Open In System Default": the default app, no line.
 open_default :: proc(path: string, rel: string) {
-	if platform_open_default(path) do set_status("opened %s", rel)
-	else do set_error("could not open %s", rel)
+	launch_async(.Default, path, 1, rel)
+	set_status("opening %s...", rel)
 }
 
 // "Open In...": the system's chooser on Windows, a typed command on Linux.
 open_in :: proc(path: string, line: int, rel: string) {
 	when ODIN_OS == .Windows {
-		if !platform_open_with_dialog(path) do set_error("could not show the Open With dialog")
+		launch_async(.With_Dialog, path, line, rel)
 	} else {
 		prompt_open(path, line, rel)
 	}
