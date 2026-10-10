@@ -18,7 +18,7 @@ main :: proc() {
 	lists := []^ignore.Rules{&global}
 
 	t0 := time.tick_now()
-	idx := fff.index_start(root, 1, 4096 * 1024, 0, lists, max(2, fff.worker_count()))
+	idx := fff.index_start(root, 1, 64 << 20, 0, lists, fff.walker_count(), fff.reader_count())
 	for !fff.index_done(idx) do time.sleep(time.Millisecond)
 	fmt.printfln("indexed %v files, %v lines, %.1f MB in %v", fff.index_count(idx), idx.lines, f64(idx.text_bytes) / 1e6, time.tick_since(t0))
 
@@ -36,13 +36,32 @@ main :: proc() {
 				_, complete := fff.search_round(&st, time.Second)
 				if complete do break
 			}
-			fmt.printfln("  %-8v %-14q %8v matched, %v", mode, q, st.matched, time.tick_since(t1))
+			fmt.printfln("  %-8v %-14q %8v matched, %v%s", mode, q, st.matched, time.tick_since(t1), st.narrowed ? "  (narrowed)" : "")
 			if st.top.n > 0 {
 				it := st.top.items[0]
 				buf: [2048]u8
 				text, _ := fff.candidate(idx, mode, int(it.item), int(it.line), buf[:])
 				fmt.printfln("           best (%v): %s", it.score, string(text[:min(len(text), 100)]))
 			}
+		}
+	}
+	// Typing the last query one character at a time: each keystroke after
+	// the first can narrow the one before.
+	if len(queries) > 0 {
+		q := queries[len(queries) - 1]
+		fmt.println("  typing", q)
+		for n in 1 ..= len(q) {
+			query: fff.Search_Query
+			query.text_len = copy(query.text[:], q[:n])
+			query.k = 1000
+			query.idx = idx
+			fff.search_reset(&st, &query)
+			t1 := time.tick_now()
+			for {
+				_, complete := fff.search_round(&st, time.Second)
+				if complete do break
+			}
+			fmt.printfln("    %-14q %8v matched, %v%s", q[:n], st.matched, time.tick_since(t1), st.narrowed ? "  (narrowed)" : "")
 		}
 	}
 	fff.search_state_destroy(&st)

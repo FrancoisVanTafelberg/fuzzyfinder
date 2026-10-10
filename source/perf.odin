@@ -18,7 +18,7 @@ package fff
     averages, so the panel holds still enough to read.
 
     THE THREADS ROW is one column per background thread, its busy share of
-    the last half second: the walker (W), the readers, and the search workers.
+    the last half second: the walkers (W), the readers, and the search workers.
     The main thread is the stacked bar above it - with the work moved off it,
     nearly all of a frame should be "wait": presenting, and sleeping until
     the next one.
@@ -84,6 +84,7 @@ Perf_Shown :: struct {
 	kind:       [MAX_COLUMNS]Thread_Kind,
 	busy_pct:   [MAX_COLUMNS]f32,
 	readers:    int,
+	walkers:    int,
 	searchers:  int,
 	cpu_proc:   f32, // % of the whole machine
 	cpu_sys:    f32,
@@ -158,14 +159,15 @@ perf_frame_end :: proc(p: ^Perf, idx: ^Index, sr: ^Searcher) {
 		s.dirs_rate = f64(dirs - p.prev_dirs) / secs
 		s.read_rate = f64(read - p.prev_read) / secs
 		p.prev_loaded, p.prev_dirs, p.prev_read = loaded, dirs, read
-		for t in 0 ..= idx.readers {
+		for t in 0 ..< idx.walkers + idx.readers {
 			b := sync.atomic_load(&idx.busy_ns[t])
-			s.kind[col] = t == 0 ? .Walker : .Reader
+			s.kind[col] = t < idx.walkers ? .Walker : .Reader
 			s.busy_pct[col] = pct(b, p.prev_ibusy[t], ns)
 			p.prev_ibusy[t] = b
 			col += 1
 		}
 		s.readers = idx.readers
+		s.walkers = idx.walkers
 		s.mem_limit = idx.max_text_bytes
 		s.over_limit = sync.atomic_load(&idx.over_limit)
 	}
@@ -320,7 +322,7 @@ perf_panel_draw :: proc(r: rl.Rectangle) {
 
 	// Background threads: one column each, busy share of the last half second.
 	draw_text(
-		fit(fmt.tprintf("threads: walker, %v readers, %v search", s.readers, s.searchers), cols),
+		fit(fmt.tprintf("threads: %v walk, %v read, %v search", s.walkers, s.readers, s.searchers), cols),
 		x,
 		y,
 		COL_DIM,

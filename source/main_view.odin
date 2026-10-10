@@ -203,7 +203,7 @@ viewer_draw :: proc(r: rl.Rectangle) {
 	case .Binary:
 		draw_text("Binary file - not shown. Press Enter to open it.", body.x + gw + f.pad, body.y + f.pad, COL_DIM)
 	case .Too_Big:
-		draw_text(fmt.tprintf("Larger than %v KB (max_file_kb in settings.txt) - not read.", g.settings.max_file_kb), body.x + gw + f.pad, body.y + f.pad, COL_DIM)
+		draw_text(fmt.tprintf("Larger than %v MB - not read. Raise \"max file size\" in the panel on the right to search it.", g.settings.max_file_mb), body.x + gw + f.pad, body.y + f.pad, COL_DIM)
 	case .Unreadable:
 		draw_text("Could not be read.", body.x + gw + f.pad, body.y + f.pad, COL_BAD)
 	case .Over_Limit:
@@ -551,6 +551,35 @@ panel_draw :: proc(r: rl.Rectangle) {
 	if wv := ui_take_wheel(list); wv != 0 do g.panel_scroll -= wv * lh * 3
 	rl.BeginScissorMode(i32(list.x), i32(list.y), i32(list.width), i32(list.height))
 	y := r.y + f.pad - g.panel_scroll
+
+	// The size limit: files larger than this are listed, not read.
+	{
+		// Focus moved away by a click elsewhere: that counts as done.
+		if g.size_editing && g.focus != .Size do size_edit_end(true)
+		draw_text("Max file size", x, y, COL_ACCENT)
+		y += lh
+		editing := g.focus == .Size
+		box := rl.Rectangle{x, y, 7 * f.cw, lh}
+		if ui_take_click(box) && !editing {
+			size_edit_begin()
+			editing = true
+		}
+		fill(box, COL_GUTTER)
+		outline(box, editing ? COL_ACCENT : (hovered(box) ? COL_EDGE : COL_RULE), editing ? 2 : 1)
+		shown := editing ? string(g.size_buf[:]) : fmt.tprint(g.settings.max_file_mb)
+		tx := box.x + box.width - f.cw * 0.5 - text_width(shown) // right-aligned, like a number
+		draw_text(shown, tx, y, COL_TEXT)
+		if editing {
+			cx := tx + f32(text_cols(shown[:g.size_cursor])) * f.cw
+			fill({cx, y + 2, 2, lh - 4}, COL_ACCENT)
+		}
+		draw_text("MB", box.x + box.width + f.cw, y, COL_DIM)
+		y += lh
+		hint := editing ? "Enter applies, Esc cancels" : "larger files: names only"
+		draw_text(fit(hint, cols), x, y, COL_FAINT)
+		y += lh * 1.5
+	}
+
 	draw_text("Ignored", x, y, COL_ACCENT)
 	y += lh * 1.5
 

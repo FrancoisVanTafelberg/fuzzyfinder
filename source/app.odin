@@ -7,7 +7,7 @@ package fff
     happens on other threads, and the main thread never waits for any of
     them:
 
-        indexing        index.odin: a walker and several readers
+        indexing        index.odin: walkers and readers
         searching       search.odin: the search thread and its workers
         opening files   launch.odin: a short-lived thread per launch
         freeing an old  a short-lived thread, once its builders have finished
@@ -37,6 +37,7 @@ APP_TITLE :: "fff - Fast Fuzzy Finder"
 Focus :: enum u8 {
 	Search,
 	Viewer,
+	Size, // the max file size box in the panel
 }
 
 App :: struct {
@@ -70,6 +71,9 @@ App :: struct {
 	click_time:    f64, // for double-clicks on a result
 	click_row:     int,
 	panel_scroll:  f32,
+	size_buf:      [dynamic]u8, // the max file size box, while it is being edited
+	size_cursor:   int,
+	size_editing:  bool,
 
 	menu:          Menu_State, // Esc
 	ctx:           Context_Menu, // right-click
@@ -220,7 +224,8 @@ app_keys :: proc() {
 		if rl.IsKeyPressed(.ESCAPE) do g.ctx.open = false
 	case:
 		if rl.IsKeyPressed(.ESCAPE) {
-			g.menu.open = true
+			if g.focus == .Size do size_edit_end(false)
+			else do g.menu.open = true
 		} else {
 			main_keys()
 		}
@@ -307,7 +312,8 @@ reindex :: proc() {
 	lists := rule_lists()
 	max_text := i64(g.settings.max_index_mb) * 1024 * 1024
 	if g.settings.max_index_mb == 0 do max_text = auto_index_limit()
-	g.idx = index_start(g.root, g.idx_gen, i64(g.settings.max_file_kb) * 1024, max_text, lists[:], reader_count())
+	max_file := i64(g.settings.max_file_mb) * 1024 * 1024
+	g.idx = index_start(g.root, g.idx_gen, max_file, max_text, lists[:], walker_count(), reader_count())
 	watch_set_index(&g.watch, g.idx)
 	g.rules_changed = false
 	g.hidden_upto = 0
@@ -315,10 +321,17 @@ reindex :: proc() {
 	g.view = {file = -1}
 }
 
-// Readers: reading is mostly waiting for the disk, so more readers than cores
-// still helps - but not without limit.
+// Readers: reading is partly waiting for the disk, and an SSD answers many
+// requests at once, so twice as many readers as cores - more requests in
+// flight on a cold start, and on a warm one the extra threads only take turns.
 reader_count :: proc() -> int {
-	return clamp(worker_count(), 2, MAX_WORKERS)
+	return clamp(2 * worker_count(), 4, MAX_READERS)
+}
+
+// Walkers: listing a folder is a few system calls; a handful of threads keep
+// the readers fed on trees of many small folders.
+walker_count :: proc() -> int {
+	return clamp(worker_count(), 2, MAX_WALKERS)
 }
 
 // With max_index_mb = 0: half the machine's memory.

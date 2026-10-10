@@ -36,7 +36,10 @@ Settings :: struct {
 	results:          i32, // how many result rows are shown at once (a page)
 	max_results:      i32, // how many results are kept to page through
 	max_fps:          i32,
-	max_file_kb:      i32,
+	// Files larger than this, in MB, are listed but not read. The ignore
+	// panel has a box for it. At most MAX_FILE_MB_MAX: line positions are
+	// 32-bit offsets into a file.
+	max_file_mb:      i32,
 	// The most text the index holds, in MB; 0 = half the machine's memory.
 	// Past it, files are still listed but not read.
 	max_index_mb:     i32,
@@ -58,6 +61,7 @@ RESULTS_MAX :: 50
 MAX_RESULTS_MIN :: 10
 MAX_RESULTS_MAX :: 100_000
 OPEN_WITH_RECENT_MAX :: 6
+MAX_FILE_MB_MAX :: 4095
 
 settings_defaults :: proc() -> (s: Settings) {
 	s = Settings {
@@ -70,7 +74,7 @@ settings_defaults :: proc() -> (s: Settings) {
 		results      = 10,
 		max_results  = 1000,
 		max_fps      = 60,
-		max_file_kb  = 4096,
+		max_file_mb  = 64,
 		show_metrics = true,
 	}
 	// Version control internals: never what anyone is looking for, and a
@@ -108,15 +112,18 @@ settings_load :: proc(s: ^Settings, path: string) -> (first_run: bool) {
 		return
 	}
 
-	get_int :: proc(o: json.Object, key: string, out: ^i32) {
+	get_int :: proc(o: json.Object, key: string, out: ^i32) -> bool {
 		if v, ok := o[key]; ok {
 			#partial switch n in v {
 			case json.Integer:
 				out^ = i32(n)
+				return true
 			case json.Float:
 				out^ = i32(n)
+				return true
 			}
 		}
+		return false
 	}
 	get_str :: proc(o: json.Object, key: string) -> (string, bool) {
 		if v, ok := o[key]; ok {
@@ -142,7 +149,11 @@ settings_load :: proc(s: ^Settings, path: string) -> (first_run: bool) {
 	get_int(obj, "results", &s.results)
 	get_int(obj, "max_results", &s.max_results)
 	get_int(obj, "max_fps", &s.max_fps)
-	get_int(obj, "max_file_kb", &s.max_file_kb)
+	// Before October 2026 the limit was max_file_kb, 4096 by default. A value
+	// someone chose is carried over; the old default gives way to the new.
+	old_kb: i32
+	if get_int(obj, "max_file_kb", &old_kb) && old_kb != 4096 && old_kb > 0 do s.max_file_mb = (old_kb + 1023) / 1024
+	get_int(obj, "max_file_mb", &s.max_file_mb)
 	get_int(obj, "max_index_mb", &s.max_index_mb)
 	if ed, ok := get_str(obj, "editor"); ok do s.editor = strings.clone(ed)
 	if v, ok := obj["show_metrics"]; ok {
@@ -173,7 +184,7 @@ settings_load :: proc(s: ^Settings, path: string) -> (first_run: bool) {
 	s.results = clamp(s.results, RESULTS_MIN, RESULTS_MAX)
 	s.max_results = clamp(s.max_results, MAX_RESULTS_MIN, MAX_RESULTS_MAX)
 	s.max_fps = clamp(s.max_fps, 0, 1000)
-	s.max_file_kb = clamp(s.max_file_kb, 16, 1024 * 1024)
+	s.max_file_mb = clamp(s.max_file_mb, 1, MAX_FILE_MB_MAX)
 	s.max_index_mb = max(s.max_index_mb, 0)
 	return
 }
@@ -222,8 +233,8 @@ settings_save :: proc(s: ^Settings, path: string) {
 	w(&b, "max_results", fmt.tprint(s.max_results))
 	w(&b, "show_metrics", s.show_metrics ? "true" : "false")
 	fmt.sbprintln(&b, "")
-	fmt.sbprintln(&b, "// search - files larger than this (in KB) are listed but not read")
-	w(&b, "max_file_kb", fmt.tprint(s.max_file_kb))
+	fmt.sbprintln(&b, "// search - files larger than this (in MB, at most 4095) are listed but not read")
+	w(&b, "max_file_mb", fmt.tprint(s.max_file_mb))
 	fmt.sbprintln(&b, "// the most file text kept in memory, in MB; 0 = half of this machine's memory")
 	w(&b, "max_index_mb", fmt.tprint(s.max_index_mb))
 	fmt.sbprintln(&b, "")

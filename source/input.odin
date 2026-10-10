@@ -21,6 +21,8 @@ package fff
         Esc                   the menu
 */
 
+import "core:fmt"
+import "core:strconv"
 import "core:strings"
 import "core:unicode/utf8"
 import rl "vendor:raylib"
@@ -43,11 +45,13 @@ shift_down :: proc() -> bool {
 
 main_keys :: proc() {
 	if rl.IsKeyPressed(.TAB) {
-		g.focus = g.focus == .Search ? .Viewer : .Search
+		if g.focus == .Size do size_edit_end(true) // back to the search line
+		else do g.focus = g.focus == .Search ? .Viewer : .Search
 	}
 
-	// Paste goes to the search line whatever has focus: pasting is typing.
-	if paste_pressed() {
+	// Paste goes to the search line whatever has focus - pasting is typing -
+	// unless a number is being typed into the size box.
+	if paste_pressed() && g.focus != .Size {
 		g.focus = .Search
 	}
 
@@ -63,7 +67,10 @@ main_keys :: proc() {
 	half := max(1, viewer_rows() / 2)
 	if key_hit(.PAGE_UP) do viewer_scroll(-half)
 	if key_hit(.PAGE_DOWN) do viewer_scroll(half)
-	if rl.IsKeyPressed(.ENTER) || rl.IsKeyPressed(.KP_ENTER) do open_selected()
+	if rl.IsKeyPressed(.ENTER) || rl.IsKeyPressed(.KP_ENTER) {
+		if g.focus == .Size do size_edit_end(true)
+		else do open_selected()
+	}
 
 	switch g.focus {
 	case .Viewer:
@@ -78,7 +85,45 @@ main_keys :: proc() {
 		if rl.IsKeyPressed(.END) do viewer_scroll(viewer_lines())
 	case .Search:
 		if edit_line(&g.query, &g.cursor) do g.sel = 0
+	case .Size:
+		edit_line(&g.size_buf, &g.size_cursor)
+		// Digits only, and no more than the limit has.
+		for i := len(g.size_buf) - 1; i >= 0; i -= 1 {
+			if g.size_buf[i] < '0' || g.size_buf[i] > '9' {
+				ordered_remove(&g.size_buf, i)
+				if g.size_cursor > i do g.size_cursor -= 1
+			}
+		}
+		if len(g.size_buf) > 4 do resize(&g.size_buf, 4)
+		g.size_cursor = clamp(g.size_cursor, 0, len(g.size_buf))
 	}
+}
+
+// Start typing into the max file size box.
+size_edit_begin :: proc() {
+	g.focus = .Size
+	g.size_editing = true
+	clear(&g.size_buf)
+	append(&g.size_buf, fmt.tprint(g.settings.max_file_mb))
+	g.size_cursor = len(g.size_buf)
+}
+
+// Stop: keep what was typed (Enter, Tab, a click elsewhere) or not (Esc). A
+// new limit reads the tree again: files now under it are read, files now
+// over it are dropped.
+size_edit_end :: proc(keep: bool) {
+	if !g.size_editing do return
+	g.size_editing = false
+	if g.focus == .Size do g.focus = .Search
+	if !keep do return
+	v, ok := strconv.parse_int(string(g.size_buf[:]))
+	if !ok || v <= 0 do return
+	mb := i32(clamp(v, 1, MAX_FILE_MB_MAX))
+	if mb == g.settings.max_file_mb do return
+	g.settings.max_file_mb = mb
+	settings_save(&g.settings, g.settings_path)
+	set_status("files up to %v MB are searched - reading again", mb)
+	reindex()
 }
 
 set_mode_search :: proc(m: Mode) {

@@ -19,8 +19,10 @@ fff only **reads** files. To edit one, press Enter and it opens in your editor a
 
 ```
 +--------------------------------------------+-----------+
-| viewer: the selected file, at the matched  |  ignored  |
-| line, matched characters underlined        |  folders  |
+| viewer: the selected file, at the matched  |  max file |
+| line, matched characters underlined        |  size     |
+|                                            |  ignored  |
+|                                            |  folders  |
 |                                            |  & types  |
 +--------------------------------------------+           |
 | results: the best 10, best first           |  key      |
@@ -66,7 +68,7 @@ The panel sits above the key legend. It is on by default, and F3 or `show_metric
 | disk | bytes read per second, as the OS counts it and as fff counts it |
 | index | files read and folders listed per second |
 | main thread | one stacked bar per frame: update, draw, and wait (presenting and waiting for vsync). The main thread does no indexing or searching, so nearly all of it should be wait. |
-| threads | one column per background thread (the walker, the readers, the search workers), showing the share of the last half second it spent working |
+| threads | one column per background thread (the walkers, marked W, the readers, the search workers), showing the share of the last half second it spent working |
 
 While the panel is showing and fff is idle, it redraws 20 times a second instead of sleeping, so the readout stays live. Turn it off for a fully idle fff.
 
@@ -94,13 +96,24 @@ The scoring is fzf's: word-boundary, camelCase and consecutive-match bonuses, an
 
 Lower-case terms match either case. A capital letter makes that term case-sensitive.
 
-The index is built and searched on background threads, so the window appears at once, stays responsive, and results arrive while files are still being read. A spinner in the search line (and in the viewer, for a file not read yet) shows that work is still going on. Searching uses every core.
+The index is built and searched on background threads, so the window appears at once, stays responsive, and results arrive while files are still being read. A spinner in the search line (and in the viewer, for a file not read yet) shows that work is still going on. Searching uses every core, and a big file is split between them.
 
-Binary files (a NUL byte in the first 8000 bytes) and files over `max_file_kb` are not read, but they still appear in files mode. Once the index holds `max_index_mb` of text, fff stops reading more files and says so in red in the status line; the rest are still listed in files mode.
+**How a search stays fast.**
+- **Rare-character scan.** Whatever part of the query a file's path can't supply has to be on the line itself. fff scans each file's text for the rarest such character, 32 bytes at a time, and only scores the lines it appears on. `zzzzqqq` over 40 million lines takes 0.2 s instead of 1.4 s.
+- **Narrowing.** When you type on, the new query can only match lines the previous one matched, so fff searches those instead of the whole tree. Typing `mai` → `main` on that tree takes microseconds instead of 1.4 s. Going back to a query searched a moment ago, or adding a trailing space, shows its results straight away. This works for up to 4 million matches per query, and only once the index is fully read.
+
+**Binary files** (a NUL byte in the first 8000 bytes) are not read; nothing in them would be worth showing as a line.
+
+**Large files.** Files over the **max file size** at the top of the right-hand panel (64 MB by default, at most 4095 MB) are not read either. Both still appear in files mode. Click the box, type a size and press Enter; fff reads the tree again with the new limit.
+- **Memory:** a file read costs its size, plus 4–8 bytes per line for the line tables.
+- **Reading:** one reader reads a whole file, while the others carry on with other files.
+- **Searching:** the work is shared out in pieces of 16,384 lines.
+
+**Memory limit.** Once the index holds `max_index_mb` of text, fff stops reading more files and says so in red in the status line. The files not read are still listed in files mode.
 
 ## Ignoring folders and file types
 
-The panel on the right lists what is left out. Right-click a result to add to it:
+The panel on the right lists what is left out: files over the max file size at its top (see Searching), and the folders and file types below it. Right-click a result to add to those:
 
 | Menu item | Adds | Meaning |
 |---|---|---|
@@ -159,7 +172,7 @@ font_size        = 18
 results          = 10              // result rows per page
 max_results      = 1000            // how many results are kept to page through
 max_fps          = 60
-max_file_kb      = 4096            // larger files are listed, not read
+max_file_mb      = 64              // larger files are listed, not read (the box in the panel)
 max_index_mb     = 0               // text held in memory at most; 0 = half the machine's RAM
 show_metrics     = true            // the F3 panel
 editor           = ""              // "" = the system default app, see above
@@ -176,7 +189,7 @@ fff writes `fff.log` next to settings.txt. It records only problems:
 | `slow frame: …` | a frame kept the window busy for more than 150 ms, with where the time went |
 | `main thread stuck … for …` | the window did not finish a frame for over a second (a watchdog thread checks) |
 | `reader N stuck: … on <file>` | one file has taken over 5 seconds to read (a network drive, a locked file) |
-| `walker stuck: … listing <folder>` | listing one folder has taken over 5 seconds |
+| `walker N stuck: … listing <folder>` | listing one folder has taken over 5 seconds |
 | `slow read: …` | a file took over a second to read |
 | `dropped input queued during a … freeze` | keys and clicks made while the window was frozen were thrown away rather than applied late |
 
@@ -203,11 +216,13 @@ There is no hot-reload build: fff is small enough to rebuild and rerun.
 | Thread | Does |
 |---|---|
 | main | input and drawing only. It never reads a file, walks a folder or searches, so it can't freeze on a big tree. |
-| walker | lists folders breadth-first, skipping ignored ones, and publishes each file it finds |
-| readers (one per core, at least two) | read files, detect binary, build each file's line table |
+| walkers (one per core, 2 to 8) | list folders, skipping ignored ones. The folders are listed in parallel but published in order (breadth-first, sorted within each folder), so the files come out in the same order every run. |
+| readers (two per core, 4 to 32) | read files, detect binary, build each file's line table. More readers than cores keep more requests in flight while the disk is cold. |
 | searcher, plus a worker per core | runs the query over the index in rounds; a new keystroke cancels the old search at once |
 | watchdog | writes to fff.log when any of the above gets stuck |
 | launches | opening a file runs on its own short-lived thread, so a slow editor start can't block the window |
+
+Folders are listed and files read with the system calls directly (`getdents64` on Linux, `FindFirstFileExW` and `CreateFileW` on Windows). `core:os` makes several calls per entry that fff doesn't need, and on Windows it opened every file just to list it. File text and line tables go into large per-reader blocks instead of one allocation per file.
 
 The index is stored in chunks that never move, so other threads read it without locks while it grows. A rebuild (after removing an ignore rule) builds a new index beside the old one and swaps it in; the old one is freed on a throwaway thread. Background threads run at lower priority than the window.
 
@@ -217,7 +232,10 @@ The index is stored in chunks that never move, so other threads read it without 
 source/
   app.odin            the frame, the App block, starting and swapping the index and search
   index.odin          the walker and reader threads, and the index they fill
-  search.odin         the search thread, running the query over the index on all cores
+  fs_*.odin           listing folders and reading files, per platform
+  arena.odin          the blocks file text and line tables live in
+  scan.odin           SIMD byte counting and searching
+  search.odin         the search thread: rare-character scan, narrowing, all cores
   parallel.odin       fan-out / join helper for the search thread
   watch.odin          fff.log and the watchdog
   main_view.odin      viewer, results, search line, ignore panel

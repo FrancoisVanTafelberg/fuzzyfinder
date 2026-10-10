@@ -146,8 +146,7 @@ watch_thread :: proc(w: ^Watch) {
 	last := sync.atomic_load(&w.heartbeat)
 	still := time.tick_now() // when the heartbeat last moved
 	reported := false
-	reader_reported: [MAX_INDEX_THREADS]int
-	for i in 0 ..< MAX_INDEX_THREADS do reader_reported[i] = -1
+	reported_on: [MAX_INDEX_THREADS]i64 // the `since` of the job last reported, per slot
 
 	for !sync.atomic_load(&w.quit) {
 		time.sleep(100 * time.Millisecond)
@@ -167,30 +166,24 @@ watch_thread :: proc(w: ^Watch) {
 			reported = true
 		}
 
-		// The readers: anyone on one file for a long time?
+		// The readers: anyone on one file for a long time? The walkers: on one
+		// folder?
 		sync.lock(&w.idx_mu)
 		if idx := w.idx; idx != nil {
 			now := time.tick_now()._nsec
-			for slot in 1 ..= idx.readers {
+			for slot in 0 ..< idx.walkers + idx.readers {
 				cur := sync.atomic_load(&idx.current[slot])
 				since := sync.atomic_load(&idx.since[slot])
 				if cur < 0 || since == 0 do continue
-				if reader_reported[slot] == cur do continue
-				if time.Duration(now - since) > STUCK_AFTER * 5 {
+				if reported_on[slot] == since do continue
+				if time.Duration(now - since) <= STUCK_AFTER * 5 do continue
+				if slot < idx.walkers {
+					log_line("walker %v stuck: %v listing %s", slot, time.Duration(now - since), index_walker_dir(idx, cur))
+				} else {
 					f := index_file(idx, cur)
-					log_line("reader %v stuck: %v on %s (%v KB)", slot, time.Duration(now - since), f.rel, f.size / 1024)
-					reader_reported[slot] = cur
+					log_line("reader %v stuck: %v on %s (%v KB)", slot - idx.walkers, time.Duration(now - since), f.rel, max(f.size, 0) / 1024)
 				}
-			}
-			// And the walker, on one folder?
-			if since := sync.atomic_load(&idx.since[0]); since != 0 && reader_reported[0] != int(since) {
-				if time.Duration(now - since) > STUCK_AFTER * 5 {
-					sync.lock(&idx.walk_mu)
-					dir := strings.clone(string(idx.walk_dir[:idx.walk_dir_len]), context.temp_allocator)
-					sync.unlock(&idx.walk_mu)
-					log_line("walker stuck: %v listing %s", time.Duration(now - since), dir)
-					reader_reported[0] = int(since)
-				}
+				reported_on[slot] = since
 			}
 		}
 		sync.unlock(&w.idx_mu)
