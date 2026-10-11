@@ -132,6 +132,13 @@ Index :: struct {
 	read_bytes:     i64, // atomic: bytes read from disk, text or not
 	dirs:           int, // atomic: folders listed
 	over_limit:     int, // atomic: files not read because of max_index_mb
+	// For "X GB left": the bytes to read, as far as the listings said (only
+	// Windows listings give sizes), and how many of them are done.
+	// size_unknown counts files listed without a size: while it is above
+	// zero there is no byte total to show.
+	found_bytes:    i64, // atomic
+	done_bytes:     i64, // atomic
+	size_unknown:   int, // atomic
 
 	walking:        bool, // atomic
 	walkers_live:   int, // atomic
@@ -253,6 +260,15 @@ index_done :: proc(idx: ^Index) -> bool {
 	if idx == nil do return true
 	walking := sync.atomic_load(&idx.walking)
 	return !walking && sync.atomic_load(&idx.loaded) >= sync.atomic_load(&idx.count)
+}
+
+// The bytes still to read, if every file found so far came with a size
+// (Windows); ok false otherwise (Linux).
+index_bytes_left :: proc(idx: ^Index) -> (left: i64, done: i64, ok: bool) {
+	if sync.atomic_load(&idx.size_unknown) > 0 do return 0, 0, false
+	found := sync.atomic_load(&idx.found_bytes)
+	done = sync.atomic_load(&idx.done_bytes)
+	return max(found - done, 0), done, true
 }
 
 index_progress :: proc(idx: ^Index) -> f32 {
@@ -405,6 +421,11 @@ publish_file :: proc(idx: ^Index, rel: string, size: i64) {
 		rel  = rel,
 		size = size,
 	}
+	if size < 0 {
+		sync.atomic_add(&idx.size_unknown, 1)
+	} else if size <= idx.max_file_bytes {
+		sync.atomic_add(&idx.found_bytes, size) // too big ones are never read
+	}
 	sync.atomic_store(&idx.count, i + 1)
 }
 
@@ -440,11 +461,13 @@ reader_thread :: proc(idx: ^Index, r: int) {
 			time.sleep(time.Millisecond)
 		}
 		f := index_file(idx, i)
+		listed := f.size // what the listing said; load_file may correct it
 		start := time.tick_now()
 		sync.atomic_store(&idx.since[slot], i64(start._nsec))
 		sync.atomic_store(&idx.current[slot], i)
 
 		load_file(idx, f, &rd)
+		if listed >= 0 && listed <= idx.max_file_bytes do sync.atomic_add(&idx.done_bytes, listed)
 
 		took := time.tick_since(start)
 		sync.atomic_store(&idx.current[slot], -1)

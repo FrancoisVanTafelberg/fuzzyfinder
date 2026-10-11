@@ -74,6 +74,7 @@ App :: struct {
 	size_buf:      [dynamic]u8, // the max file size box, while it is being edited
 	size_cursor:   int,
 	size_editing:  bool,
+	eta:           Eta, // "~8 s" while reading (main_view.odin)
 
 	menu:          Menu_State, // Esc
 	ctx:           Context_Menu, // right-click

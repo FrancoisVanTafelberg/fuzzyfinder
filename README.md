@@ -102,6 +102,11 @@ The index is built and searched on background threads, so the window appears at 
 - **Rare-character scan.** Whatever part of the query a file's path can't supply has to be on the line itself. fff scans each file's text for the rarest such character, 32 bytes at a time, and only scores the lines it appears on. `zzzzqqq` over 40 million lines takes 0.2 s instead of 1.4 s.
 - **Narrowing.** When you type on, the new query can only match lines the previous one matched, so fff searches those instead of the whole tree. Typing `mai` → `main` on that tree takes microseconds instead of 1.4 s. Going back to a query searched a moment ago, or adding a trailing space, shows its results straight away. This works for up to 4 million matches per query, and only once the index is fully read.
 
+**Progress.** While the tree is being read, the search line shows how far along it is:
+- `read 12,340 of 48,210+ files` while folders are still being listed. The `+` means more files are still being found.
+- `read 12,340 of 48,210 files · 35,870 left` once every folder is listed. The total comes from listing folders, without opening any files.
+- On Windows it adds `· 1.20 GB left, ~8 s`. The folder listing gives every file's size at no extra cost, and the time is the remaining bytes over the recent read rate. On Linux, getting sizes would cost a system call per file, so it is left out.
+
 **Binary files** (a NUL byte in the first 8000 bytes) are not read; nothing in them would be worth showing as a line.
 
 **Large files.** Files over the **max file size** at the top of the right-hand panel (64 MB by default, at most 4095 MB) are not read either. Both still appear in files mode. Click the box, type a size and press Enter; fff reads the tree again with the new limit.
@@ -160,6 +165,23 @@ editor = "code -g {file}:{line}"
 ```
 
 **Open In…** in the right-click menu shows the Windows "Open with" dialog. On Linux it asks for a command, such as `gedit +{line}` or `code -g {file}:{line}`, and remembers the last few.
+
+## Permissions
+
+fff never needs Administrator or sudo. It only reads, writes nothing but its own `settings.txt` and `fff.log`, and runs fine as a normal user anywhere.
+
+When it can't get at something, it skips it:
+
+| What | What fff does |
+|---|---|
+| A folder you may not list (Windows `C:\System Volume Information`, another user's home folder) | skipped, with everything under it |
+| A file you may not read, or one another program holds locked (`pagefile.sys`, the registry hives in `System32\config`) | listed in files mode; the viewer says "Could not be read" |
+| Symbolic links and junctions (`C:\Documents and Settings`) | not followed: they can loop |
+| Devices, pipes and sockets (`/dev`) | left out: reading a pipe could wait forever |
+
+So `fff C:\Windows\System32` works without elevation. fff is a 64-bit program, so it sees the real `System32`, not the 32-bit view. Most of the folder is binary (`.dll`, `.exe`), so mostly file names are searched, plus the text files among them. Running fff as Administrator would only let it into the few folders a normal user can't list.
+
+On Linux, avoid starting it at `/`. Files in `/proc` report a size of 0 and come out empty, and `/sys` is thousands of tiny generated files. Add `proc/`, `sys/` and `dev/` to the ignore list if you want to search from the root.
 
 ## Settings
 

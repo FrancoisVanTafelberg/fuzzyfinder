@@ -81,7 +81,9 @@ File_Handle :: linux.Fd
 
 // Open a file for reading and say how big it is.
 file_open :: proc(s: ^Path_Scratch, path: string) -> (h: File_Handle, size: i64, ok: bool) {
-	fd, err := linux.open(c_path(s, path), {.CLOEXEC})
+	// NONBLOCK: a file that turned into a pipe since it was listed must not
+	// hang the reader. It changes nothing for regular files.
+	fd, err := linux.open(c_path(s, path), {.CLOEXEC, .NONBLOCK})
 	if err != nil do return -1, 0, false
 	st: linux.Stat
 	if linux.fstat(fd, &st) != nil || !linux.S_ISREG(st.mode) {

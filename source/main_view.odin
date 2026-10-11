@@ -477,10 +477,12 @@ search_bar_draw :: proc(r: rl.Rectangle) {
 			if matched > kept do page = fmt.tprintf("%s best", page)
 			right = fmt.tprintf("%s   %s", page, right)
 		}
-		if g.mode == .Content do right = fmt.tprintf("%s   %s files", right, thousands(files))
 		if !index_done(g.idx) {
-			right = fmt.tprintf("%s   reading %v%%", right, int(index_progress(g.idx) * 100))
-		} else if searching() {
+			right = fmt.tprintf("%s   %s", right, reading_text(g.idx))
+		} else if g.mode == .Content {
+			right = fmt.tprintf("%s   %s files", right, thousands(files))
+		}
+		if index_done(g.idx) && searching() {
 			right = fmt.tprintf("%s   searching", right)
 		}
 		if over := sync.atomic_load(&g.idx.over_limit); over > 0 {
@@ -488,7 +490,8 @@ search_bar_draw :: proc(r: rl.Rectangle) {
 			right_col = COL_BAD
 		}
 	}
-	right = fit(right, int(r.width / f.cw / 2))
+	// While reading, the progress at the end matters most: cut from the left.
+	right = index_done(g.idx) ? fit(right, int(r.width / f.cw / 2)) : fit_left(right, int(r.width / f.cw * 0.6))
 	rw := text_width(right)
 	draw_text(right, r.x + r.width - f.pad - rw, y, right_col)
 
@@ -506,6 +509,62 @@ search_bar_draw :: proc(r: rl.Rectangle) {
 		fill({cx, y + 2, 2, f.lh - 4}, COL_ACCENT)
 		outline(r, COL_ACCENT, 2)
 	}
+}
+
+// While the index is being built: "read 12,340 of 48,210+ files" while more
+// are still being found (the +), then "read 12,340 of 48,210 files · 35,870
+// left". Where the listings gave sizes (Windows) also " · 1.20 GB left, ~8 s"
+// - free there; on Linux it would cost a stat per file, so it is left out.
+reading_text :: proc(idx: ^Index) -> string {
+	found := index_count(idx)
+	read := min(sync.atomic_load(&idx.loaded), found)
+	if index_walking(idx) {
+		return fmt.tprintf("read %s of %s+ files", thousands(read), thousands(found))
+	}
+	s := fmt.tprintf("read %s of %s files · %s left", thousands(read), thousands(found), thousands(found - read))
+	if left, done, ok := index_bytes_left(idx); ok {
+		s = fmt.tprintf("%s · %s left", s, bytes_text(f64(left)))
+		if secs, known := eta_seconds(idx, done, left); known do s = fmt.tprintf("%s, ~%s", s, duration_text(secs))
+	}
+	return s
+}
+
+// The reading rate, smoothed, for a time left.
+Eta :: struct {
+	idx:        ^Index,
+	last_bytes: i64,
+	last_time:  f64,
+	rate:       f64, // bytes per second; 0 until measured
+}
+
+@(private = "file")
+eta_seconds :: proc(idx: ^Index, done, left: i64) -> (secs: f64, ok: bool) {
+	e := &g.eta
+	now := rl.GetTime()
+	if e.idx != idx {
+		e^ = {idx = idx, last_bytes = done, last_time = now}
+		return 0, false
+	}
+	if dt := now - e.last_time; dt >= 0.5 {
+		r := f64(done - e.last_bytes) / dt
+		e.rate = e.rate == 0 ? r : e.rate * 0.7 + r * 0.3
+		e.last_bytes = done
+		e.last_time = now
+	}
+	if e.rate <= 0 do return 0, false
+	return f64(left) / e.rate, true
+}
+
+@(private = "file")
+duration_text :: proc(secs: f64) -> string {
+	s := int(secs + 0.5)
+	switch {
+	case s < 60:
+		return fmt.tprintf("%v s", max(s, 1))
+	case s < 3600:
+		return fmt.tprintf("%v min", (s + 30) / 60)
+	}
+	return fmt.tprintf("%v h %v min", s / 3600, (s % 3600) / 60)
 }
 
 // ---------------------------------------------------------------------------
