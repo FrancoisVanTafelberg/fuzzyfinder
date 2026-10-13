@@ -44,12 +44,15 @@ Settings :: struct {
 	// Past it, files are still listed but not read.
 	max_index_mb:     i32,
 	show_metrics:     bool, // the performance panel (F3)
+	exact:            bool, // exact mode: plain terms match as substrings ('term for fuzzy)
 	// What Enter runs. "" asks the system for the file's default app and, if
 	// that is an editor fff knows, passes it the line. Otherwise a command
 	// with {file} and {line} in it, e.g. "code -g {file}:{line}".
 	editor:           string, // owned
 	// "Open In..." on Linux types a command; the last few are offered again.
 	open_with_recent: [dynamic]string, // owned
+	// The folder bar's ▼: folders searched lately, most recent first.
+	recent_roots:     [dynamic]string, // owned
 	// "...from all searches".
 	global:           ignore.Rules,
 }
@@ -89,6 +92,8 @@ settings_destroy :: proc(s: ^Settings) {
 	delete(s.editor)
 	for r in s.open_with_recent do delete(r)
 	delete(s.open_with_recent)
+	for r in s.recent_roots do delete(r)
+	delete(s.recent_roots)
 	ignore.destroy(&s.global)
 }
 
@@ -159,7 +164,15 @@ settings_load :: proc(s: ^Settings, path: string) -> (first_run: bool) {
 	if v, ok := obj["show_metrics"]; ok {
 		if b, is := v.(json.Boolean); is do s.show_metrics = bool(b)
 	}
+	if v, ok := obj["exact"]; ok {
+		if b, is := v.(json.Boolean); is do s.exact = bool(b)
+	}
 
+	if arr, ok := get_list(obj, "recent_roots"); ok {
+		for e in arr do if str, is := e.(json.String); is && len(str) > 0 && len(s.recent_roots) < RECENT_ROOTS_MAX {
+			append(&s.recent_roots, strings.clone(string(str)))
+		}
+	}
 	if arr, ok := get_list(obj, "open_with_recent"); ok {
 		for e in arr do if str, is := e.(json.String); is && len(str) > 0 && len(s.open_with_recent) < OPEN_WITH_RECENT_MAX {
 			append(&s.open_with_recent, strings.clone(string(str)))
@@ -233,7 +246,9 @@ settings_save :: proc(s: ^Settings, path: string) {
 	w(&b, "max_results", fmt.tprint(s.max_results))
 	w(&b, "show_metrics", s.show_metrics ? "true" : "false")
 	fmt.sbprintln(&b, "")
-	fmt.sbprintln(&b, "// search - files larger than this (in MB, at most 4095) are listed but not read")
+	fmt.sbprintln(&b, "// search - exact: plain terms match as exact substrings, 'term is fuzzy (the panel's toggle, Alt+E)")
+	w(&b, "exact", s.exact ? "true" : "false")
+	fmt.sbprintln(&b, "// files larger than this (in MB, at most 4095) are listed but not read")
 	w(&b, "max_file_mb", fmt.tprint(s.max_file_mb))
 	fmt.sbprintln(&b, "// the most file text kept in memory, in MB; 0 = half of this machine's memory")
 	w(&b, "max_index_mb", fmt.tprint(s.max_index_mb))
@@ -243,6 +258,7 @@ settings_save :: proc(s: ^Settings, path: string) {
 	fmt.sbprintln(&b, "//   editor = \"code -g {file}:{line}\"")
 	w(&b, "editor", q(s.editor))
 	w(&b, "open_with_recent", list(s.open_with_recent[:]))
+	w(&b, "recent_roots", list(s.recent_roots[:]))
 	fmt.sbprintln(&b, "")
 	fmt.sbprintln(&b, "// ignored in every search. Folders: \"name/\" matches a folder of that")
 	fmt.sbprintln(&b, "// name anywhere (* and ? allowed). Types: extensions, without the dot.")

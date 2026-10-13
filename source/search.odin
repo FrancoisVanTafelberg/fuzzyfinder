@@ -73,6 +73,7 @@ Search_Query :: struct {
 	k:         int,
 	idx:       ^Index,
 	rules_ver: int,
+	exact:     bool, // exact mode: plain terms are substrings (fuzzy.parse)
 }
 
 query_text :: proc(q: ^Search_Query) -> string {
@@ -189,7 +190,7 @@ cache_drop :: proc(e: ^Cache_Entry) {
 
 search_reset :: proc(st: ^Search_State, q: ^Search_Query) {
 	st.q = q^
-	st.pattern = fuzzy.parse(query_text(q))
+	st.pattern = fuzzy.parse(query_text(q), q.exact)
 	st.cursor = 0
 	st.cursor_item = 0
 	st.matched = 0

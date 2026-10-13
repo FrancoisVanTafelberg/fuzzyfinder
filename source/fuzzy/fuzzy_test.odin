@@ -151,3 +151,19 @@ could_match_is_necessary_not_sufficient :: proc(t: ^testing.T) {
 	q := parse("app12")
 	testing.expect(t, could_match(&q, transmute([]u8)string("app"), transmute([]u8)string("x")))
 }
+
+@(test)
+exact_mode_flips_the_quote :: proc(t: ^testing.T) {
+	p := parse("abc 'def ^gh ij$ !kl", exact = true)
+	testing.expect_value(t, p.n, 5)
+	testing.expect_value(t, p.terms[0].kind, Term_Kind.Exact)
+	testing.expect_value(t, p.terms[1].kind, Term_Kind.Fuzzy)
+	testing.expect_value(t, p.terms[2].kind, Term_Kind.Prefix)
+	testing.expect_value(t, p.terms[3].kind, Term_Kind.Suffix)
+	testing.expect_value(t, p.terms[4].kind, Term_Kind.Negate)
+	q := parse("abc", exact = true)
+	_, ok, _ := match(&q, transmute([]u8)string("a_b_c"))
+	testing.expect(t, !ok, "exact: no gaps")
+	_, ok2, _ := match(&q, transmute([]u8)string("xabcx"))
+	testing.expect(t, ok2)
+}

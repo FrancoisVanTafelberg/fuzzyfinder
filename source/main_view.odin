@@ -10,6 +10,7 @@ package fff
         +--------------------------------------------+  types    |
         | results: the best N, best first            |           |
         +--------------------------------------------+-----------+
+        | dir [↑] the folder searched           [▼] [Browse...]  |
         | content > query_                    counts / status    |
         +--------------------------------------------------------+
 
@@ -27,6 +28,7 @@ import rl "vendor:raylib"
 Layout :: struct {
 	viewer:  rl.Rectangle,
 	results: rl.Rectangle,
+	root:    rl.Rectangle, // the folder bar (root_bar.odin)
 	search:  rl.Rectangle,
 	panel:   rl.Rectangle,
 }
@@ -38,12 +40,14 @@ layout :: proc() -> (l: Layout) {
 	sh := f.lh + 2 * f.pad
 	pw := clamp(w * 0.22, 26 * f.cw, 52 * f.cw)
 	pw = min(pw, w * 0.4)
+	dh := f.lh + f.pad // the folder bar
 	rh := f32(g.settings.results) * f.lh + 2 * f.pad
-	rh = min(rh, (h - sh) * 0.5)
+	rh = min(rh, (h - sh - dh) * 0.5)
 	l.search = {0, h - sh, w, sh}
-	l.panel = {w - pw, 0, pw, h - sh}
-	l.results = {0, h - sh - rh, w - pw, rh}
-	l.viewer = {0, 0, w - pw, h - sh - rh}
+	l.root = {0, h - sh - dh, w, dh}
+	l.panel = {w - pw, 0, pw, h - sh - dh}
+	l.results = {0, h - sh - dh - rh, w - pw, rh}
+	l.viewer = {0, 0, w - pw, h - sh - dh - rh}
 	return
 }
 
@@ -139,6 +143,7 @@ main_draw :: proc() {
 	viewer_draw(l.viewer)
 	results_draw(l.results)
 	panel_draw(l.panel)
+	root_bar_draw(l.root)
 	search_bar_draw(l.search)
 }
 
@@ -456,7 +461,7 @@ search_bar_draw :: proc(r: rl.Rectangle) {
 		spinner_draw(x + f.lh * 0.4, y + f.lh / 2, f.lh * 0.32)
 		x += f.lh
 	}
-	prompt := fmt.tprintf("%s > ", MODE_NAME[g.mode])
+	prompt := fmt.tprintf("%s%s > ", MODE_NAME[g.mode], g.settings.exact ? " exact" : "")
 	x += f32(draw_text(prompt, x, y, focused ? COL_ACCENT : COL_DIM)) * f.cw
 
 	// What is on the right decides how much room the query gets.
@@ -587,6 +592,8 @@ panel_draw :: proc(r: rl.Rectangle) {
 		{"W / S", "viewer line"},
 		{"E / D", "viewer half page"},
 		{"Alt+C/F", "content / files"},
+		{"Alt+E", "fuzzy / exact"},
+		{"Ctrl+L", "change folder"},
 		{"Right-click", "more"},
 		{"F3", "metrics"},
 		{"Esc", "menu"},
@@ -615,6 +622,7 @@ panel_draw :: proc(r: rl.Rectangle) {
 	{
 		// Focus moved away by a click elsewhere: that counts as done.
 		if g.size_editing && g.focus != .Size do size_edit_end(true)
+		top := y
 		draw_text("Max file size", x, y, COL_ACCENT)
 		y += lh
 		editing := g.focus == .Size
@@ -634,9 +642,25 @@ panel_draw :: proc(r: rl.Rectangle) {
 		}
 		draw_text("MB", box.x + box.width + f.cw, y, COL_DIM)
 		y += lh
+		// Fuzzy / exact: beside the size when the panel is wide enough,
+		// under it otherwise.
+		tw := 14 * f.cw
+		side := f32(16) * f.cw + tw <= w
 		hint := editing ? "Enter applies, Esc cancels" : "larger files: names only"
-		draw_text(fit(hint, cols), x, y, COL_FAINT)
+		draw_text(fit(hint, cols), x, y, COL_FAINT) // the row under both
 		y += lh * 1.5
+		ty := top
+		gx := x + w - tw
+		if !side {
+			ty = y
+			gx = x
+			y += lh * 2.5
+		}
+		draw_text("Search", gx, ty, COL_ACCENT)
+		seg := rl.Rectangle{gx, ty + lh, tw / 2, lh}
+		if button(seg, "fuzzy", !g.settings.exact) do set_exact(false)
+		seg.x += tw / 2
+		if button(seg, "exact", g.settings.exact) do set_exact(true)
 	}
 
 	draw_text("Ignored", x, y, COL_ACCENT)

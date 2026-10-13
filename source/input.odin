@@ -44,20 +44,30 @@ shift_down :: proc() -> bool {
 }
 
 main_keys :: proc() {
+	if ctrl_down() && rl.IsKeyPressed(.L) && g.focus != .Root do root_edit_begin()
 	if rl.IsKeyPressed(.TAB) {
-		if g.focus == .Size do size_edit_end(true) // back to the search line
-		else do g.focus = g.focus == .Search ? .Viewer : .Search
+		switch g.focus {
+		case .Size:
+			size_edit_end(true) // back to the search line
+		case .Root:
+			root_complete() // Tab completes a folder name
+		case .Search:
+			g.focus = .Viewer
+		case .Viewer:
+			g.focus = .Search
+		}
 	}
 
 	// Paste goes to the search line whatever has focus - pasting is typing -
-	// unless a number is being typed into the size box.
-	if paste_pressed() && g.focus != .Size {
+	// unless a number or a path is being typed into its own box.
+	if paste_pressed() && g.focus != .Size && g.focus != .Root {
 		g.focus = .Search
 	}
 
 	if alt_down() {
 		if rl.IsKeyPressed(.C) do set_mode_search(.Content)
 		if rl.IsKeyPressed(.F) do set_mode_search(.Files)
+		if rl.IsKeyPressed(.E) do set_exact(!g.settings.exact)
 		return // Alt+letter is a command, never typing
 	}
 
@@ -68,8 +78,14 @@ main_keys :: proc() {
 	if key_hit(.PAGE_UP) do viewer_scroll(-half)
 	if key_hit(.PAGE_DOWN) do viewer_scroll(half)
 	if rl.IsKeyPressed(.ENTER) || rl.IsKeyPressed(.KP_ENTER) {
-		if g.focus == .Size do size_edit_end(true)
-		else do open_selected()
+		#partial switch g.focus {
+		case .Size:
+			size_edit_end(true)
+		case .Root:
+			root_edit_end(true)
+		case:
+			open_selected()
+		}
 	}
 
 	switch g.focus {
@@ -85,6 +101,9 @@ main_keys :: proc() {
 		if rl.IsKeyPressed(.END) do viewer_scroll(viewer_lines())
 	case .Search:
 		if edit_line(&g.query, &g.cursor) do g.sel = 0
+	case .Root:
+		if ctrl_down() && rl.IsKeyPressed(.L) do break
+		edit_line(&g.root_bar.buf, &g.root_bar.cursor, phrases = false)
 	case .Size:
 		edit_line(&g.size_buf, &g.size_cursor)
 		// Digits only, and no more than the limit has.
@@ -97,6 +116,14 @@ main_keys :: proc() {
 		if len(g.size_buf) > 4 do resize(&g.size_buf, 4)
 		g.size_cursor = clamp(g.size_cursor, 0, len(g.size_buf))
 	}
+}
+
+// Fuzzy or exact matching (the panel's toggle, Alt+E). Saved.
+set_exact :: proc(on: bool) {
+	if g.settings.exact == on do return
+	g.settings.exact = on
+	settings_save(&g.settings, g.settings_path)
+	set_status(on ? "exact search - 'term for a fuzzy term" : "fuzzy search - 'term for an exact term")
 }
 
 // Start typing into the max file size box.
@@ -135,7 +162,9 @@ set_mode_search :: proc(m: Mode) {
 
 // One line of text being typed: the query, or the Open In command.
 // Returns true if the text changed.
-edit_line :: proc(buf: ^[dynamic]u8, cursor: ^int) -> bool {
+// `phrases`: paste text with spaces as one "quoted phrase" (the query); a
+// path box pastes it as it is.
+edit_line :: proc(buf: ^[dynamic]u8, cursor: ^int, phrases := true) -> bool {
 	changed := false
 	cursor^ = clamp(cursor^, 0, len(buf))
 	ctrl := ctrl_down()
@@ -145,7 +174,7 @@ edit_line :: proc(buf: ^[dynamic]u8, cursor: ^int) -> bool {
 		// this": a copied sentence or log line is meant literally, and split
 		// into words it would match each one fuzzily, anywhere on a line.
 		// Ctrl+Shift+V pastes the words as separate terms, as if typed.
-		as_typed := ctrl && shift_down()
+		as_typed := (ctrl && shift_down()) || !phrases
 		clip := clean_paste(string(rl.GetClipboardText()), !as_typed)
 		if len(clip) > 0 {
 			inject_at(buf, cursor^, ..transmute([]u8)clip)

@@ -38,6 +38,7 @@ Focus :: enum u8 {
 	Search,
 	Viewer,
 	Size, // the max file size box in the panel
+	Root, // the folder bar's path (root_bar.odin)
 }
 
 App :: struct {
@@ -75,6 +76,7 @@ App :: struct {
 	size_cursor:   int,
 	size_editing:  bool,
 	eta:           Eta, // "~8 s" while reading (main_view.odin)
+	root_bar:      Root_Bar,
 
 	menu:          Menu_State, // Esc
 	ctx:           Context_Menu, // right-click
@@ -118,6 +120,7 @@ app_init :: proc() {
 	g.first_run = settings_load(&g.settings, g.settings_path)
 	g.root = resolve_root()
 	log_line("searching %s", g.root)
+	recent_add(g.root)
 	title := fmt.ctprintf("fff - %s", g.root)
 	window_open(&g.settings, title, g.first_run)
 	platform_init()
@@ -155,6 +158,7 @@ app_frame :: proc() -> bool {
 	// --- take what the other threads have ready ---------------------------
 	watch_phase(&g.watch, .Work)
 	take_status()
+	root_bar_upkeep()
 	index_upkeep()
 	search_upkeep()
 	results_sync()
@@ -169,8 +173,10 @@ app_frame :: proc() -> bool {
 	if modal || g.busy_time > INPUT_GUARD do ui_take_all()
 	// The context menu takes its clicks before the page underneath sees them.
 	if g.ctx.open && !modal do context_menu_input()
+	if g.root_bar.recent && !modal do root_recent_input()
 	main_draw()
 	if modal do g.ui = held
+	if g.root_bar.recent do root_recent_draw()
 	if g.ctx.open do context_menu_draw()
 	if g.prompt.open do prompt_draw()
 	if g.menu.open do menu_draw()
@@ -226,6 +232,8 @@ app_keys :: proc() {
 	case:
 		if rl.IsKeyPressed(.ESCAPE) {
 			if g.focus == .Size do size_edit_end(false)
+			else if g.focus == .Root do root_edit_end(false)
+			else if g.root_bar.recent do g.root_bar.recent = false
 			else do g.menu.open = true
 		} else {
 			main_keys()
@@ -372,14 +380,15 @@ index_upkeep :: proc() {
 search_upkeep :: proc() {
 	q := &g.posted
 	text := string(g.query[:])
-	if query_text(q) != text || q.mode != g.mode || q.k != int(g.settings.max_results) || q.idx != g.idx || q.rules_ver != g.rules_ver {
+	if query_text(q) != text || q.mode != g.mode || q.k != int(g.settings.max_results) || q.idx != g.idx || q.rules_ver != g.rules_ver || q.exact != g.settings.exact {
 		q.text_len = copy(q.text[:], text)
 		q.mode = g.mode
 		q.k = int(g.settings.max_results)
 		q.idx = g.idx
 		q.rules_ver = g.rules_ver
+		q.exact = g.settings.exact
 		g.posted_id = searcher_post(&g.searcher, q)
-		g.pattern = fuzzy.parse(text)
+		g.pattern = fuzzy.parse(text, q.exact)
 	}
 	searcher_fetch(&g.searcher, &g.res)
 }
@@ -424,6 +433,12 @@ abs_path :: proc(f: ^File, allocator := context.temp_allocator) -> string {
 		for &c in b do if c == '/' do c = '\\'
 	}
 	return p
+}
+
+// The "this search only" rules: gone when the root changes.
+ignore_session_clear :: proc() {
+	ignore.destroy(&g.session)
+	g.session = {}
 }
 
 rule_lists :: proc() -> [2]^ignore.Rules {

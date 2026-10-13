@@ -19,8 +19,9 @@ fff only **reads** files. To edit one, press Enter and it opens in your editor a
 
 ```
 +--------------------------------------------+-----------+
-| viewer: the selected file, at the matched  |  max file |
-| line, matched characters underlined        |  size     |
+| viewer: the selected file, at the matched  | max size, |
+| line, matched characters underlined        | fuzzy /   |
+|                                            | exact     |
 |                                            |  ignored  |
 |                                            |  folders  |
 |                                            |  & types  |
@@ -28,6 +29,7 @@ fff only **reads** files. To edit one, press Enter and it opens in your editor a
 | results: the best 10, best first           |  key      |
 |                                            |  legend   |
 +--------------------------------------------+-----------+
+| dir [↑] the folder being searched        [▼] [Browse...] |
 | content > your query                   counts / status |
 +--------------------------------------------------------+
 ```
@@ -47,6 +49,8 @@ The layout uses the whole window at whatever size it is. There is no fixed canva
 | A / F, Home / End | viewer: scroll sideways; jump to the top / bottom (viewer focused) |
 | PageUp / PageDown | viewer: half a page, whatever has focus |
 | Alt+C / Alt+F | content mode / files mode |
+| Alt+E | fuzzy / exact search (the toggle at the top of the panel) |
+| Ctrl+L | type a folder to search (the folder bar) |
 | Ctrl+V, Shift+Insert | paste into the search line, whatever has focus. Text with spaces goes in as one exact phrase (`"like this"`). |
 | Ctrl+Shift+V | paste the words as separate terms, as if typed |
 | Ctrl+U, Ctrl+Backspace | clear the query, delete a word |
@@ -92,6 +96,8 @@ The scoring is fzf's: word-boundary, camelCase and consecutive-match bonuses, an
 | `!"a b"` | must **not** contain the phrase |
 | `a b` | every term must match |
 
+**Exact search.** The fuzzy / exact toggle at the top right of the panel (or Alt+E) switches every plain term to an exact substring, like `fzf --exact`. `'abc` then flips that one term back to fuzzy. `^`, `$`, `!` and `"phrases"` mean the same in both modes. The search line shows `content exact >` while exact search is on, and the choice is saved.
+
 **Pasting.** A paste takes the first non-blank line of the clipboard. Tabs become spaces and the ends are trimmed. A term can be up to 512 characters, so long paths and log lines paste whole.
 
 Lower-case terms match either case. A capital letter makes that term case-sensitive.
@@ -115,6 +121,19 @@ The index is built and searched on background threads, so the window appears at 
 - **Searching:** the work is shared out in pieces of 16,384 lines.
 
 **Memory limit.** Once the index holds `max_index_mb` of text, fff stops reading more files and says so in red in the status line. The files not read are still listed in files mode.
+
+## Changing the folder
+
+The folder bar above the search line shows the folder being searched:
+
+| Control | Does |
+|---|---|
+| ↑ | search the parent folder |
+| the path (click it, or Ctrl+L) | type a folder. Tab completes a folder name, listing the choices when there are several. Enter switches and Esc cancels. Relative paths start from the current folder, and `~` is your home folder. A pasted path can have quotes around it. |
+| ▼ | the last 10 folders searched (saved in settings.txt) |
+| Browse... | the system's folder picker. On Windows that's the shell's "Browse for Folder" dialog; on Linux it's zenity or kdialog, whichever is installed. |
+
+Switching reads the new folder from scratch. The "this search only" ignore rules are cleared, because they are paths inside the old folder. The query, the mode and the "all searches" rules stay.
 
 ## Ignoring folders and file types
 
@@ -197,6 +216,8 @@ max_fps          = 60
 max_file_mb      = 64              // larger files are listed, not read (the box in the panel)
 max_index_mb     = 0               // text held in memory at most; 0 = half the machine's RAM
 show_metrics     = true            // the F3 panel
+exact            = false           // exact search (the panel's toggle, Alt+E)
+recent_roots     = [...]           // the folder bar's ▼ list
 editor           = ""              // "" = the system default app, see above
 ignore_folders   = [".git/", "node_modules/"]
 ignore_types     = []
@@ -261,6 +282,8 @@ source/
   parallel.odin       fan-out / join helper for the search thread
   watch.odin          fff.log and the watchdog
   main_view.odin      viewer, results, search line, ignore panel
+  root_bar.odin       the folder bar: typing, completing, recent folders, Browse...
+  pick_*.odin         the system folder picker, per platform
   overlays.odin       right-click menu, Esc menu, Linux "Open In..." prompt
   input.odin          keys and line editing
   launch*.odin        opening files: shared, Windows, Linux

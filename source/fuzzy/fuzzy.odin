@@ -33,6 +33,10 @@ package fuzzy
 
     Space-separated terms must ALL match; their scores add up. Smart case per
     term: all-lowercase matches any case, a capital makes the term exact-case.
+
+    EXACT MODE (parse with exact = true; the fff toggle, fzf --exact): a plain
+    term matches as an exact substring, and 'abc flips that one term back to
+    fuzzy. ^, $, ! and "phrases" mean the same in both modes.
 */
 
 SCORE_MATCH :: 16
@@ -150,7 +154,7 @@ bonus_for :: #force_inline proc "contextless" (prev, cur: Char_Class) -> int {
 
 // Split a query into terms. Pure; the Pattern is a value with no pointers, so
 // worker threads can each be handed a copy.
-parse :: proc(query: string) -> (p: Pattern) {
+parse :: proc(query: string, exact := false) -> (p: Pattern) {
 	i := 0
 	for i < len(query) && p.n < MAX_TERMS {
 		for i < len(query) && query[i] == ' ' do i += 1
@@ -176,12 +180,14 @@ parse :: proc(query: string) -> (p: Pattern) {
 		}
 		if len(word) == 0 do continue
 
+		flipped := false // 'abc in exact mode: this term is fuzzy
 		if t.kind == .Fuzzy do switch {
 		case word[0] == '!':
 			t.kind = .Negate
 			word = word[1:]
 		case word[0] == '\'':
-			t.kind = .Exact
+			if exact do flipped = true
+			else do t.kind = .Exact
 			word = word[1:]
 		case word[0] == '^':
 			t.kind = .Prefix
@@ -190,6 +196,7 @@ parse :: proc(query: string) -> (p: Pattern) {
 			t.kind = .Suffix
 			word = word[:len(word) - 1]
 		}
+		if exact && t.kind == .Fuzzy && !flipped do t.kind = .Exact
 		if len(word) == 0 do continue // a lone "!" or "'" is still being typed
 		if len(word) > MAX_TERM_LEN do word = word[:MAX_TERM_LEN]
 
